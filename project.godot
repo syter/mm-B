@@ -1,0 +1,29 @@
+; Godot 4.x 项目配置
+config_version=5
+
+[application]
+
+config/name="Tower Defense Prototype"
+config/features=PackedStringArray("4.7", "Forward Plus")
+run/main_scene=""
+
+[debug]
+
+gdscript/warnings/untyped_declaration=1
+
+[display]
+
+; 设计分辨率。UI 按这个尺寸布局，再由 stretch 整体缩放到实际窗口。
+; 缩放倍率 = 窗口高 / 这个高度。
+window/size/viewport_width=800
+window/size/viewport_height=560
+
+; 实际窗口。开发机屏幕是 1440x900 逻辑分辨率，减掉菜单栏和标题栏后
+; 最多约 1400x840——设超了会被系统裁掉，反而把缩放倍率压回去。
+window/size/window_width_override=1360
+window/size/window_height_override=810
+
+; canvas_items：整个画面跟着窗口等比缩放
+; expand：多出来的那一边不留黑边，而是变成可用空间
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"

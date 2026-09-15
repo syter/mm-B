@@ -1,0 +1,17 @@
+# Godot 导入缓存与编辑器状态——由引擎自动生成，绝不提交
+.godot/
+*.translation
+
+# 导出的构建产物
+/build/
+/export/
+*.exe
+*.pck
+*.zip
+
+# 导出预设可能含有签名密钥/Steam 凭据
+export_presets.cfg
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
