@@ -3,3 +3,6 @@
 *.jpg binary
 *.ogg binary
 *.wav binary
+*.otf binary
+*.ttf binary
+*.otc binary

@@ -3,9 +3,9 @@ config_version=5
 
 [application]
 
-config/name="Tower Defense Prototype"
+config/name="属性塔防"
 config/features=PackedStringArray("4.7", "Forward Plus")
-run/main_scene=""
+run/main_scene="res://scenes/main.tscn"
 
 [debug]
 
@@ -18,10 +18,15 @@ gdscript/warnings/untyped_declaration=1
 window/size/viewport_width=800
 window/size/viewport_height=560
 
-; 实际窗口。开发机屏幕是 1440x900 逻辑分辨率，减掉菜单栏和标题栏后
-; 最多约 1400x840——设超了会被系统裁掉，反而把缩放倍率压回去。
-window/size/window_width_override=1360
-window/size/window_height_override=810
+; 实际窗口。1280x720 是个安全值：
+; 开发机是 1440x900 逻辑分辨率（减掉菜单栏和标题栏最多约 1400x840），装得下；
+; 分享出去之后最常见的 1366x768 笔记本也装得下。
+; 设超了会被系统裁掉，反而把 canvas_items 的缩放倍率压回去。
+window/size/window_width_override=1280
+window/size/window_height_override=720
+
+; 允许拉伸窗口。stretch 是 canvas_items + expand，拉多大都不会糊。
+window/size/resizable=true
 
 ; canvas_items：整个画面跟着窗口等比缩放
 ; expand：多出来的那一边不留黑边，而是变成可用空间
