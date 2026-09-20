@@ -52,8 +52,26 @@ func status(rs) -> String:
 		return ""
 	return String(_status.call(rs))
 
+## 已经堆到封顶的奖励不该再出现在三选一里 —— 那等于白白浪费一格。
+## 暴击不算：机率虽然封顶 65%，但倍率不封顶，永远还有得涨。
+func is_maxed(rs) -> bool:
+	var m: Modifiers = rs.mods
+	match id:
+		"counter": return m.counter_bonus >= Modifiers.CAP_COUNTER_BONUS
+		"relief":
+			return Balance.MULT_COUNTERED + m.countered_relief >= Modifiers.CAP_COUNTERED
+		"neutral":
+			return Balance.MULT_NEUTRAL_ATK + m.neutral_boost >= Modifiers.CAP_NEUTRAL
+		"slow": return m.slow_pct >= Modifiers.CAP_SLOW
+		"interest": return m.interest_pct >= Modifiers.CAP_INTEREST
+		"refine": return m.upgrade_discount >= Modifiers.CAP_UPGRADE_DISCOUNT
+		"surge": return m.skill_cd_cut >= Modifiers.CAP_SKILL_CD
+	return false
+
 ## 某些奖励有前置条件
 func is_available(rs) -> bool:
+	if is_maxed(rs):
+		return false
 	match id:
 		"ticket":
 			for t: Tower in rs.towers:
@@ -110,11 +128,15 @@ static func _build() -> void:
 			func(rs) -> String: return _cap(
 				Balance.MULT_NEUTRAL_ATK + rs.mods.effective_neutral(),
 				Modifiers.CAP_NEUTRAL, "%.2f")),
-		Reward.new("interest", Rarity.B, "利息", "每波结束按存款给 8%",
+		Reward.new("interest", Rarity.B, "利息", "每波结束时按当时的存款给 8%（钱留着不花才生息）",
 			func(rs) -> void: rs.mods.interest_pct += 0.08,
-			func(rs) -> String: return "目前 %d%% / 封顶 %d%%" % [
-				roundi(rs.mods.effective_interest() * 100.0),
-				roundi(Modifiers.CAP_INTEREST * 100.0)]),
+			func(rs) -> String:
+				# 光给百分比没用，玩家想知道的是「这一波结束到底进账多少」
+				var now: float = rs.mods.effective_interest()
+				var nxt: float = minf(now + 0.08, Modifiers.CAP_INTEREST)
+				return "目前 %d%%（按存款 %d 金算 +%d）　→　选后 %d%%（+%d）" % [
+					roundi(now * 100.0), rs.gold, floori(float(rs.gold) * now),
+					roundi(nxt * 100.0), floori(float(rs.gold) * nxt)]),
 		Reward.new("refine", Rarity.B, "精炼", "属性塔升级与练级费用 -20%",
 			func(rs) -> void: rs.mods.upgrade_discount += 0.20,
 			func(rs) -> String: return "目前 -%d%% / 封顶 -%d%%" % [
@@ -144,6 +166,39 @@ static func _build() -> void:
 				rs.skill_cooldown(),
 				Balance.SKILL_COOLDOWN * (1.0 - Modifiers.CAP_SKILL_CD)]),
 
+		# ---- 后加的一批 ----
+		Reward.new("regen", Rarity.C, "回春", "每波结束回复 1 点生命",
+			func(rs) -> void: rs.mods.regen_per_wave += 1,
+			func(rs) -> String: return "目前每波回 %d 点" % rs.mods.regen_per_wave),
+		Reward.new("charge", Rarity.B, "蓄力", "每座塔的第 5 发攻击伤害翻倍再翻倍",
+			func(rs) -> void: rs.mods.charge_level += 1,
+			func(rs) -> String: return "目前那一发 ×%.1f　→　选后 ×%.1f" % [
+				rs.mods.charge_multiplier(),
+				1.0 + 2.0 * float(rs.mods.charge_level + 1)]),
+		Reward.new("lock", Rarity.B, "锁定", "连续命中同一只怪，每次伤害 +8%",
+			func(rs) -> void: rs.mods.lock_bonus += 0.08,
+			func(rs) -> String: return "目前 +%d%%/层，最多叠 %d 层" % [
+				roundi(rs.mods.lock_bonus * 100.0), Modifiers.CAP_LOCK_STACKS]),
+		Reward.new("foundation", Rarity.B, "奠基", "下一座塔位半价",
+			func(rs) -> void: rs.mods.build_discount_charges += 1,
+			func(rs) -> String: return "手上 %d 张半价券" % rs.mods.build_discount_charges),
+		Reward.new("execute", Rarity.A, "处决", "对血量低于 25% 的怪，伤害 +80%",
+			func(rs) -> void: rs.mods.execute_bonus += 0.8,
+			func(rs) -> String: return "目前 +%d%%" % roundi(rs.mods.execute_bonus * 100.0)),
+		Reward.new("fission", Rarity.A, "裂变", "击杀时对附近的怪造成死者最大血量 15% 的伤害",
+			func(rs) -> void: rs.mods.fission_ratio += 0.15,
+			func(rs) -> String: return "目前 %d%%" % roundi(rs.mods.fission_ratio * 100.0)),
+		Reward.new("killstreak", Rarity.A, "连杀", "本波不漏怪时，赏金逐只递增 5%",
+			func(rs) -> void: rs.mods.killstreak_bonus += 0.05,
+			func(rs) -> String: return "目前 +%d%%/只，最多 %d 只（漏怪清零）" % [
+				roundi(rs.mods.killstreak_bonus * 100.0), Modifiers.CAP_KILLSTREAK]),
+		Reward.new("mono", Rarity.S, "独尊", "场上只有一种属性的塔时，该属性伤害 +60%",
+			func(rs) -> void: rs.mods.mono_bonus += 0.6,
+			func(rs) -> String:
+				var only: String = _mono_name(rs)
+				return "目前 +%d%%　·　%s" % [roundi(rs.mods.mono_bonus * 100.0),
+					("当前生效（%s）" % only) if only != "" else "当前没生效：场上不止一种属性"]),
+
 		# ---- S：稀有，拿到就该兴奋 ----
 		Reward.new("crit", Rarity.S, "破绽", "暴击机率与暴击倍率同时提升",
 			func(rs) -> void: rs.mods.crit_level += 1,
@@ -160,6 +215,18 @@ static func _build() -> void:
 			func(rs) -> void: rs.mods.skill_power += 0.25,
 			func(rs) -> String: return "目前 +%d%%" % roundi(rs.mods.skill_power * 100.0)),
 	]
+
+## 场上是不是只有一种属性的塔，给「独尊」的状态行用
+static func _mono_name(rs) -> String:
+	var found: int = -1
+	for t: Tower in rs.towers:
+		if not t.is_upgraded():
+			continue
+		if found < 0:
+			found = int(t.element)
+		elif found != int(t.element):
+			return ""
+	return "" if found < 0 else Types.name_of(found)
 
 static func by_id(id_: String) -> Reward:
 	for r: Reward in pool():

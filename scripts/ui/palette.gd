@@ -69,6 +69,9 @@ static var ROUND_SHAPES: bool = true
 ## 战场底纹强度（0＝纯色）。一大片纯色背景会像个洞，
 ## 铺一层极淡的网格之后才有「地面」的感觉。
 static var BG_PATTERN: float = 0.0
+## 赛道贴图的染色。沙土的暖色跟蓝紫背景对比最强，路才「浮」得出来。
+static var TRACK_TINT: Color = Color("#c8935c")
+static var FENCE_TINT: Color = Color("#9a7448")
 ## 精灵图目录（空＝不用贴图，回退到程序绘制的圆形/方块）。
 ## 目录里要有 enemy_fire / enemy_wood / enemy_water / enemy_elite / tower 五张。
 static var SPRITE_DIR: String = ""
@@ -110,6 +113,7 @@ static func _classic() -> void:
 	BTN_TEX = ""; PANEL_TEX = ""; FONT_PATH = DEFAULT_FONT; FONT_SIZE_SCALE = 1.0
 	GLOW = 0.0; PARTICLES = false; SCANLINE = 0.0; ROUND_SHAPES = true
 	SPRITE_DIR = ""; BG_PATTERN = 0.0
+	TRACK_TINT = Color("#c8935c"); FENCE_TINT = Color("#9a7448")
 
 ## A：不用任何外部素材，靠圆角、更深的背景对比、辉光和粒子把观感拉起来
 static func _polish() -> void:

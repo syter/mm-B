@@ -11,6 +11,11 @@ var level: int = 0
 ## 已投入的金额，拆塔按 REFUND_RATE 返还
 var invested: int = 0
 var cooldown: float = 0.0
+## 蓄力用：这座塔打了几发
+var shots_fired: int = 0
+## 锁定用：上一个目标和连续命中次数
+var lock_target: Enemy = null
+var lock_streak: int = 0
 
 ## 本局统计，给模拟器看的
 var damage_dealt: float = 0.0
@@ -51,6 +56,9 @@ func rate(mods: Modifiers) -> float:
 
 func reset_for_wave() -> void:
 	cooldown = 0.0
+	shots_fired = 0
+	lock_target = null
+	lock_streak = 0
 
 func label() -> String:
 	if not is_upgraded():

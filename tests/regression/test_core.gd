@@ -20,6 +20,11 @@ func _initialize() -> void:
 	_test_tower_levels()
 	_test_skills()
 	_test_reward_pool()
+	_test_maxed_rewards()
+	_test_reroll_cost()
+	_test_interest_preview()
+	_test_element_traits()
+	_test_new_rewards()
 	_test_wave_determinism()
 	_test_battle_leaks()
 	_test_elite_leak_cost()
@@ -45,6 +50,9 @@ func _test_multiplier() -> void:
 	_feq(Types.base_multiplier(w, f), Balance.MULT_COUNTERED, "木打火＝被克")
 	_feq(Types.base_multiplier(f, f), Balance.MULT_SAME, "同属性")
 	_feq(Types.base_multiplier(Types.Element.NONE, f), Balance.MULT_NEUTRAL_ATK, "无属性打有属性")
+	# HP_GROWTH 是冻结值。它太灵敏（0.06 能把通关率从 85% 打到 33%），
+	# 定死之后调难度一律走别的参数。改了这个数就会红。
+	_feq(Balance.HP_GROWTH, 1.5, "HP_GROWTH 是冻结值 1.5，调难度请用别的参数")
 	# 核心假设：打对属性至少要比打错强 5 倍，否则玩家不会在意克制
 	var ratio: float = Balance.MULT_COUNTER / Balance.MULT_COUNTERED
 	_true(ratio >= 5.0, "克制/被克 倍率差 >= 5x（实际 %.1fx）" % ratio)
@@ -97,7 +105,7 @@ func _test_tower_economy() -> void:
 	_eq(rs.towers.size(), Balance.MAX_TOWERS, "塔位上限 %d" % Balance.MAX_TOWERS)
 	_eq(rs.free_slot(), -1, "满了就没有空位")
 	# 每波第一次拆除免费（全额返还）
-	_eq(rs.free_sells, Balance.FREE_SELLS_PER_WAVE, "开局就有免费拆除次数")
+	_eq(rs.free_sells, Balance.FREE_SELLS_PER_RUN, "开局就有免费拆除次数")
 	var t: Tower = rs.towers[0]
 	var before: int = rs.gold
 	_eq(rs.sell_value(t.slot), t.invested, "免费拆除全额返还")
@@ -131,7 +139,9 @@ func _test_upgrade_rules() -> void:
 	_eq(rs.mods.free_upgrades, 0, "券用掉了")
 	_eq(rs.gold, 0, "用券不花钱")
 
-## 免费拆除次数每波重置，否则整局只能免费拆一次
+## 免费拆除是「整局一次」，不是每波一次。
+## 每波都给的话，拆掉重组就成了零成本的常规操作，
+## 「升级后不能改属性」那条硬规则会形同虚设。
 func _test_free_sell_resets() -> void:
 	var rs: RunState = RunState.new(9)
 	rs.gold = 99999
@@ -139,8 +149,33 @@ func _test_free_sell_resets() -> void:
 	rs.sell_tower(t.slot)
 	_eq(rs.free_sells, 0, "用掉后归零")
 	rs.play_wave()
-	_eq(rs.free_sells, Balance.FREE_SELLS_PER_WAVE, "过一波后恢复")
+	_eq(rs.free_sells, 0, "过一波也不会恢复（整局只有一次）")
 	_eq(rs.wave_index, 2, "波次有推进")
+	# 用完之后只能打折拆
+	var t2: Tower = rs.build_tower()
+	var before: int = rs.gold
+	rs.sell_tower(t2.slot)
+	_true(rs.gold - before < t2.invested, "免费次数用完后只退一部分")
+
+## 利息预览要给出实际金额，不能只给百分比
+func _test_interest_preview() -> void:
+	var rs: RunState = RunState.new(51)
+	rs.gold = 1000
+	_eq(rs.interest_preview(), 0, "没领利息就没有预览收入")
+	Reward.by_id("interest").apply(rs)
+	var expect: int = floori(1000.0 * rs.mods.effective_interest())
+	_eq(rs.interest_preview(), expect, "预览＝当前存款 × 利率")
+	_true(rs.interest_preview() > 0, "领了利息就有预览收入")
+	# 预览要跟实际结算对得上
+	var before_gold: int = rs.gold
+	var preview: int = rs.interest_preview()
+	rs.begin_wave()
+	rs.battle.run_to_end()
+	rs.end_wave()
+	_true(rs.gold > before_gold, "过波后金钱增加")
+	# 存款变了利息也要跟着变
+	rs.gold = 200
+	_true(rs.interest_preview() < preview, "存款少了利息也少")
 
 ## 战斗中即时拨款：能当场花掉，而且波末结算不能再算一次
 func _test_live_gold() -> void:
@@ -279,6 +314,138 @@ func _test_reward_pool() -> void:
 		_true(r != null, "奖励 %s 存在" % id)
 		_true(r.status(rs).length() > 0, "奖励 %s 有状态说明" % id)
 
+## 堆到封顶的奖励不能再出现在三选一里 —— 那等于白白浪费一格
+func _test_maxed_rewards() -> void:
+	var rs: RunState = RunState.new(31)
+	var capped: Array[String] = ["counter", "relief", "neutral", "slow", "interest", "refine"]
+	for id: String in capped:
+		var r: Reward = Reward.by_id(id)
+		_true(r != null, "奖励 %s 存在" % id)
+		_false(r.is_maxed(rs), "%s 开局没封顶" % r.title)
+		for i: int in 20:
+			r.apply(rs)
+		_true(r.is_maxed(rs), "%s 堆 20 次后封顶" % r.title)
+		_false(r.is_available(rs), "%s 封顶后不再可选" % r.title)
+	# 实际抽牌也不能漏出来
+	var leaked: Array[String] = []
+	for i: int in 120:
+		for c: Reward in rs.roll_rewards():
+			if capped.has(c.id) and not leaked.has(c.id):
+				leaked.append(c.id)
+	_true(leaked.is_empty(), "抽 120 轮不会抽到封顶的奖励（漏出 %s）" % str(leaked))
+	# 暴击不算封顶：机率虽然有上限，但倍率不封顶，永远还有得涨
+	var crit: Reward = Reward.by_id("crit")
+	for i: int in 20:
+		crit.apply(rs)
+	_false(crit.is_maxed(rs), "暴击永远不算封顶（倍率不封顶）")
+
+## 刷新价格必须随次数和波次一起涨，否则等于免费
+func _test_reroll_cost() -> void:
+	var rs: RunState = RunState.new(32)
+	rs.wave_index = 1
+	rs.reroll_count = 0
+	_eq(rs.reroll_cost(), 0, "每轮第一次刷新免费")
+	var prev: int = 0
+	for n: int in range(1, 5):
+		rs.reroll_count = n
+		var c: int = rs.reroll_cost()
+		_true(c > prev, "第%d次刷新比上一次贵（%d > %d）" % [n + 1, c, prev])
+		prev = c
+	# 同样的次数，后期必须更贵 —— 后期金流是前期的好几倍
+	rs.reroll_count = 2
+	var early: int = rs.reroll_cost()
+	rs.wave_index = 10
+	var late: int = rs.reroll_cost()
+	_true(late > early, "同样次数后期更贵（第10波 %d > 第1波 %d）" % [late, early])
+	# 价格要是整十
+	_eq(late % 10, 0, "刷新价格取整到 10")
+
+## 三种属性各有性格：火快而脆、木慢而厚、水死时给全场回血
+func _test_element_traits() -> void:
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.seed = 7
+	# 直接查表，别依赖某一波刚好抽到哪几种属性
+	var f_sp: float = Balance.ELEMENT_SPEED_MULT[Types.Element.FIRE]
+	var w_sp: float = Balance.ELEMENT_SPEED_MULT[Types.Element.WOOD]
+	var f_hp: float = Balance.ELEMENT_HP_MULT[Types.Element.FIRE]
+	var w_hp: float = Balance.ELEMENT_HP_MULT[Types.Element.WOOD]
+	_true(f_sp > 1.0, "火跑得比基准快")
+	_true(w_sp < 1.0, "木跑得比基准慢")
+	_true(f_sp > w_sp, "火比木快")
+	_true(w_hp > f_hp, "木比火厚")
+	_true(f_hp < 1.0, "火比基准脆")
+
+	# 水怪死亡要给全场回血
+	var rs: RunState = RunState.new(41)
+	rs.begin_wave()
+	var b: Battle = rs.battle
+	var victim: Enemy = Enemy.new(Types.Element.WATER, 100.0, 1.0, 5, false)
+	var ally: Enemy = Enemy.new(Types.Element.FIRE, 100.0, 1.0, 5, false)
+	ally.hp = 40.0
+	b.active.append(victim)
+	b.active.append(ally)
+	var before: float = ally.hp
+	victim.take_damage(999.0)
+	b._on_killed(victim)
+	_true(ally.hp > before, "水怪死亡后同伴回了血（%.1f → %.1f）" % [before, ally.hp])
+	_eq(b.last_heals.size(), 1, "回血事件有记录，表现层才能飘字")
+	# 回满的不能溢出
+	ally.hp = ally.max_hp
+	var victim2: Enemy = Enemy.new(Types.Element.WATER, 100.0, 1.0, 5, false)
+	b.active.append(victim2)
+	victim2.take_damage(999.0)
+	b._on_killed(victim2)
+	_feq(ally.hp, ally.max_hp, "回血不会超过血量上限")
+
+## 后加的那批奖励，每个都要真的起作用
+func _test_new_rewards() -> void:
+	var rs: RunState = RunState.new(42)
+	var m: Modifiers = rs.mods
+
+	# 蓄力：倍率随等级涨
+	_feq(m.charge_multiplier(), 1.0, "没领蓄力就没加成")
+	m.charge_level = 1
+	_true(m.charge_multiplier() > 1.0, "领了蓄力那一发更疼")
+	var lv1: float = m.charge_multiplier()
+	m.charge_level = 2
+	_true(m.charge_multiplier() > lv1, "蓄力可以叠")
+
+	# 锁定 / 连杀：都要封顶，不然后期失控
+	m.lock_bonus = 0.08
+	_true(m.lock_multiplier(3) > m.lock_multiplier(1), "锁定连击越多越疼")
+	_feq(m.lock_multiplier(999), m.lock_multiplier(Modifiers.CAP_LOCK_STACKS),
+		"锁定叠加有上限")
+	m.killstreak_bonus = 0.05
+	_true(m.killstreak_multiplier(5) > m.killstreak_multiplier(1), "连杀赏金递增")
+	_feq(m.killstreak_multiplier(999), m.killstreak_multiplier(Modifiers.CAP_KILLSTREAK),
+		"连杀有上限")
+
+	# 奠基：半价券要真的扣钱扣券
+	rs.gold = 99999
+	m.build_discount_charges = 1
+	var full: int = rs.tower_cost(0)
+	var half: int = rs.next_tower_cost()
+	_true(half < full, "有半价券时建塔更便宜（%d < %d）" % [half, full])
+	var before_gold: int = rs.gold
+	rs.build_tower()
+	_eq(rs.gold, before_gold - half, "扣的是半价后的钱")
+	_eq(m.build_discount_charges, 0, "半价券用掉了")
+
+	# 回春：撑过一波才回血
+	m.regen_per_wave = 2
+	var lives_before: int = rs.lives
+	rs.play_wave()
+	_true(rs.lives >= lives_before - 20, "回春在波末结算（命 %d → %d）"
+		% [lives_before, rs.lives])
+
+	# 新奖励都进池子了
+	for id: String in ["regen", "charge", "lock", "foundation",
+			"execute", "fission", "killstreak", "mono"]:
+		var r: Reward = Reward.by_id(id)
+		_true(r != null, "奖励 %s 在池子里" % id)
+		if r != null:
+			_true(r.status(rs).length() > 0, "奖励 %s 有状态说明" % r.title)
+
 # ---- 波次与战斗 ------------------------------------------------------------
 
 func _test_wave_determinism() -> void:
@@ -292,8 +459,41 @@ func _test_wave_determinism() -> void:
 		if a.waves[i].preview() != c.waves[i].preview():
 			same = false
 	_false(same, "不同种子构成应该有差异")
-	# 波次构成规则
-	_eq(a.waves[0].composition().size(), 1, "第1波单一属性")
+	# 一局的节奏：前 3 波三种属性各来一波、4~6 两两混合、7 起三色混战
+	var singles: Array[int] = []
+	for i: int in 3:
+		_eq(a.waves[i].composition().size(), 1, "第%d波单一属性" % (i + 1))
+		singles.append(int(a.waves[i].composition().keys()[0]))
+	singles.sort()
+	_eq(singles.size(), 3, "前三波共 3 波")
+	_true(singles[0] != singles[1] and singles[1] != singles[2],
+		"前三波三种属性各来一次，不重复")
+	for i: int in range(3, 6):
+		_eq(a.waves[i].composition().size(), 2, "第%d波两两混合" % (i + 1))
+	# 精英 / boss 的波次与层级
+	for wi: int in Balance.ELITE_WAVES:
+		var ew: Wave = a.waves[wi - 1]
+		_neq(ew.boss_element(), Types.Element.NONE, "第%d波有精英" % wi)
+		_false(ew.has_boss(), "第%d波是精英不是大BOSS" % wi)
+	var last: Wave = a.waves[Balance.BOSS_WAVE - 1]
+	_true(last.has_boss(), "第%d波有大BOSS" % Balance.BOSS_WAVE)
+	# 大 boss 必须比精英硬，漏了也更疼
+	_true(Balance.BOSS_HP_MULT > Balance.ELITE_HP_MULT, "大BOSS比精英厚")
+	_true(Balance.LEAK_COST_BOSS > Balance.LEAK_COST_ELITE, "漏大BOSS扣更多命")
+	var boss_e: Enemy = Enemy.new(Types.Element.FIRE, 10.0, 1.0, 5, false, true)
+	_true(boss_e.is_boss, "boss 标记正确")
+	_true(boss_e.is_elite, "boss 同时也算精英（沿用精英那套表现和惩罚）")
+	_eq(boss_e.leak_cost(), Balance.LEAK_COST_BOSS, "漏 boss 按 boss 扣命")
+	# 精英属性是单独随机的，不该永远跟着本波杂兵走
+	var elite_outside: int = 0
+	for seed_i: int in 60:
+		var r2: RunState = RunState.new(seed_i * 977 + 5)
+		for wi2: int in Balance.ELITE_WAVES:
+			var w2: Wave = r2.waves[wi2 - 1]
+			if not w2.composition().has(w2.boss_element()):
+				elite_outside += 1
+	_true(elite_outside > 0,
+		"精英属性会出现在本波杂兵之外（%d 次），说明是独立随机的" % elite_outside)
 	_eq(a.waves[Balance.WAVE_THREE_ELEMENTS - 1].composition().size(), 3,
 		"第%d波起三属性混合" % Balance.WAVE_THREE_ELEMENTS)
 

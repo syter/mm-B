@@ -7,6 +7,8 @@ var hp: float = 0.0
 var base_speed: float = 0.0
 var bounty: int = 0
 var is_elite: bool = false
+## 大 boss。同时也算精英（表现层的金圈、漏怪惩罚都沿用精英那一套再加码）。
+var is_boss: bool = false
 
 ## 沿路径走过的距离，抵达 TRACK_LENGTH 即漏怪
 var distance: float = 0.0
@@ -25,18 +27,22 @@ var skill_slow_pct: float = 0.0
 func is_rooted() -> bool:
 	return root_time > 0.0
 
-func _init(element_: Types.Element, hp_: float, speed_: float, bounty_: int, elite: bool = false) -> void:
+func _init(element_: Types.Element, hp_: float, speed_: float, bounty_: int,
+		elite: bool = false, boss: bool = false) -> void:
 	element = element_
 	max_hp = hp_
 	hp = hp_
 	base_speed = speed_
 	bounty = bounty_
-	is_elite = elite
+	is_elite = elite or boss
+	is_boss = boss
 
 func speed() -> float:
 	return base_speed
 
 func leak_cost() -> int:
+	if is_boss:
+		return Balance.LEAK_COST_BOSS
 	return Balance.LEAK_COST_ELITE if is_elite else Balance.LEAK_COST_NORMAL
 
 ## 返回是否被这次伤害打死

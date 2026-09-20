@@ -22,6 +22,16 @@ var upgrade_discount: float = 0.0  ## 属性塔升级费用折扣
 var skill_power: float = 0.0       ## 技能伤害 +N%
 var skill_cd_cut: float = 0.0      ## 技能冷却缩减
 
+# ---- 后加的一批 -----------------------------------------------------------
+var execute_bonus: float = 0.0      ## 处决：对残血怪的额外伤害倍率
+var regen_per_wave: int = 0         ## 回春：每波结束回几点生命
+var build_discount_charges: int = 0 ## 奠基：还有几次建塔半价
+var fission_ratio: float = 0.0      ## 裂变：击杀时溅射死者最大血量的比例
+var charge_level: int = 0           ## 蓄力：每 N 发一次强化攻击
+var lock_bonus: float = 0.0         ## 锁定：连续命中同一只怪，每次叠加
+var killstreak_bonus: float = 0.0   ## 连杀：本波不漏怪时赏金逐只递增
+var mono_bonus: float = 0.0         ## 独尊：场上只有一种属性的塔时的加成
+
 const CAP_COUNTER_BONUS: float = 1.0
 const CAP_COUNTERED: float = 0.7
 const CAP_NEUTRAL: float = 0.9
@@ -37,6 +47,16 @@ const SLOW_DURATION: float = 1.5
 const CRIT_CHANCE_BASE: float = 0.15
 const CRIT_CHANCE_STEP: float = 0.10
 const CAP_CRIT_CHANCE: float = 0.65
+## 处决：血量低于这个比例才吃额外伤害
+const EXECUTE_THRESHOLD: float = 0.25
+## 蓄力：每几发攻击强化一次
+const CHARGE_EVERY: int = 5
+## 裂变：溅射范围（赛道单位）
+const FISSION_RADIUS: float = 2.4
+## 锁定 / 连杀的叠加上限，不封的话后期会失控
+const CAP_LOCK_STACKS: int = 10
+const CAP_KILLSTREAK: int = 20
+
 const CRIT_MULT_BASE: float = 2.0
 const CRIT_MULT_STEP: float = 0.3
 
@@ -89,6 +109,22 @@ func crit_mult_at(level: int) -> float:
 		return 1.0
 	return CRIT_MULT_BASE + CRIT_MULT_STEP * float(level - 1)
 
+## 蓄力那一发的伤害倍率（没领过就是 1）
+func charge_multiplier() -> float:
+	return 1.0 if charge_level <= 0 else 1.0 + 2.0 * float(charge_level)
+
+## 连续命中同一只怪第 n 次的伤害加成
+func lock_multiplier(streak: int) -> float:
+	if lock_bonus <= 0.0:
+		return 1.0
+	return 1.0 + lock_bonus * float(mini(streak, CAP_LOCK_STACKS))
+
+## 本波连杀第 n 只的赏金倍率
+func killstreak_multiplier(streak: int) -> float:
+	if killstreak_bonus <= 0.0:
+		return 1.0
+	return 1.0 + killstreak_bonus * float(mini(streak, CAP_KILLSTREAK))
+
 func effective_crit() -> float:
 	return crit_chance_at(crit_level)
 
@@ -121,4 +157,12 @@ func summary_lines() -> Array[String]:
 	if skill_cd_cut > 0.0:
 		parts.append("技能冷却 -%d%%" % roundi(effective_skill_cd_cut() * 100.0))
 	if free_upgrades > 0: parts.append("免费升级券 ×%d" % free_upgrades)
+	if execute_bonus > 0.0: parts.append("残血处决 +%d%%" % roundi(execute_bonus * 100.0))
+	if regen_per_wave > 0: parts.append("每波回血 +%d" % regen_per_wave)
+	if build_discount_charges > 0: parts.append("建塔半价 ×%d" % build_discount_charges)
+	if fission_ratio > 0.0: parts.append("裂变 %d%%" % roundi(fission_ratio * 100.0))
+	if charge_level > 0: parts.append("蓄力 ×%.1f" % charge_multiplier())
+	if lock_bonus > 0.0: parts.append("锁定 +%d%%/层" % roundi(lock_bonus * 100.0))
+	if killstreak_bonus > 0.0: parts.append("连杀 +%d%%/只" % roundi(killstreak_bonus * 100.0))
+	if mono_bonus > 0.0: parts.append("独尊 +%d%%" % roundi(mono_bonus * 100.0))
 	return parts

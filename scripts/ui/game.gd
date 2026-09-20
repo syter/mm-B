@@ -66,6 +66,11 @@ var font: Font
 ## 精灵图。没有的话所有绘制自动退回程序画的圆形/方块。
 var tex_enemy: Dictionary = {}
 var tex_elite: Texture2D
+var tex_boss: Texture2D
+var tex_track: Texture2D
+var tex_fence: Texture2D
+## 「流动纹理」用的累加时间，让路面纹路往前滚，不用箭头也看得出方向
+var flow_t: float = 0.0
 var tex_tower: Texture2D
 var tex_life: Texture2D
 var tex_gold: Texture2D
@@ -91,8 +96,7 @@ var btn_help: Button
 var help_layer: Control
 var help_box: Panel
 var help_title: Label
-var help_left: Label
-var help_right: Label
+var help_body: RichTextLabel
 var title_layer: Control
 var title_name: Label
 var title_sub: Label
@@ -100,8 +104,7 @@ var buff_layer: Control
 var buff_dim: ColorRect
 var buff_box: Panel
 var buff_title: Label
-var buff_left: Label
-var buff_right: Label
+var buff_body: RichTextLabel
 var slot_panel: Control
 ## 塔位操作按钮。战斗中买得起买不起会一直变，但**不能每帧重建按钮**——
 ## 按下去的那一瞬间按钮被 queue_free，pressed 信号就不会发出来，点击会失灵。
@@ -176,6 +179,15 @@ func _load_sprites() -> void:
 	var ep: String = "%s/enemy_elite.png" % Palette.SPRITE_DIR
 	if ResourceLoader.exists(ep):
 		tex_elite = load(ep)
+	var bp: String = "%s/enemy_boss.png" % Palette.SPRITE_DIR
+	if ResourceLoader.exists(bp):
+		tex_boss = load(bp)
+	var fl: String = "%s/track_floor.png" % Palette.SPRITE_DIR
+	if ResourceLoader.exists(fl):
+		tex_track = load(fl)
+	var fe: String = "%s/track_fence.png" % Palette.SPRITE_DIR
+	if ResourceLoader.exists(fe):
+		tex_fence = load(fe)
 	var tp: String = "%s/tower.png" % Palette.SPRITE_DIR
 	if ResourceLoader.exists(tp):
 		tex_tower = load(tp)
@@ -227,6 +239,7 @@ func _start_game() -> void:
 # ---- 主循环 ----------------------------------------------------------------
 
 func _process(delta: float) -> void:
+	flow_t += delta
 	for b: Dictionary in beams:
 		b["life"] = float(b["life"]) - delta
 	beams = beams.filter(func(b: Dictionary) -> bool: return float(b["life"]) > 0.0)
@@ -588,16 +601,75 @@ func _draw_hud_icons() -> void:
 	if tex_life != null:
 		draw_texture_rect(tex_life, Rect2(324, 7, sz, sz), false, Palette.LIFE)
 
+const TRACK_HALF: float = 13.0
+const FENCE_H: float = 9.0
+
 func _draw_track() -> void:
-	draw_polyline(path_points, Palette.TRACK_EDGE, 30.0)
-	draw_polyline(path_points, Palette.TRACK, 24.0)
-	# draw_polyline 在转角会留缺口，补圆角
-	for i: int in range(1, path_points.size() - 1):
-		draw_circle(path_points[i], 15.0, Palette.TRACK_EDGE)
-		draw_circle(path_points[i], 12.0, Palette.TRACK)
-	_draw_seams()
-	_draw_arrows()
+	if tex_track != null:
+		_draw_track_tiled()
+	else:
+		draw_polyline(path_points, Palette.TRACK_EDGE, 30.0)
+		draw_polyline(path_points, Palette.TRACK, 24.0)
+		for i: int in range(1, path_points.size() - 1):
+			draw_circle(path_points[i], 15.0, Palette.TRACK_EDGE)
+			draw_circle(path_points[i], 12.0, Palette.TRACK)
+		_draw_seams()
+	_draw_flow()
+	_draw_spawn()
 	_draw_goal()
+
+## 贴图版赛道：路面铺沙地，两侧钉木栅栏。
+## 赛道是轴对齐的蛇行折线，所以每一段都能直接算出矩形来平铺，
+## 不用做曲线贴图那一套。
+func _draw_track_tiled() -> void:
+	# 分三趟画：先铺路面，再钉栅栏，最后在转角补一块路面。
+	# 栅栏是沿着整段边缘铺的，到转角会横穿过去留下缺口 ——
+	# 用转角补丁盖掉比逐段算裁剪简单得多，效果一样。
+	_track_pass(true)
+	_track_pass(false)
+	for i: int in range(1, path_points.size() - 1):
+		var c: Vector2 = path_points[i]
+		draw_texture_rect(tex_track,
+			Rect2(c - Vector2(TRACK_HALF, TRACK_HALF),
+				Vector2(TRACK_HALF, TRACK_HALF) * 2.0),
+			true, Palette.TRACK_TINT)
+
+func _track_pass(floor_pass: bool) -> void:
+	for i: int in range(1, path_points.size()):
+		var a: Vector2 = path_points[i - 1]
+		var b: Vector2 = path_points[i]
+		if absf(a.y - b.y) < 0.5:
+			var x0: float = minf(a.x, b.x)
+			var w: float = absf(b.x - a.x)
+			if floor_pass:
+				draw_texture_rect(tex_track,
+					Rect2(x0, a.y - TRACK_HALF, w, TRACK_HALF * 2.0),
+					true, Palette.TRACK_TINT)
+			elif tex_fence != null:
+				draw_texture_rect(tex_fence,
+					Rect2(x0, a.y - TRACK_HALF - FENCE_H, w, FENCE_H),
+					true, Palette.FENCE_TINT)
+				draw_texture_rect(tex_fence,
+					Rect2(x0, a.y + TRACK_HALF, w, FENCE_H),
+					true, Palette.FENCE_TINT)
+		else:
+			var y0: float = minf(a.y, b.y)
+			var h: float = absf(b.y - a.y)
+			if floor_pass:
+				draw_texture_rect(tex_track,
+					Rect2(a.x - TRACK_HALF, y0, TRACK_HALF * 2.0, h),
+					true, Palette.TRACK_TINT)
+			elif tex_fence != null:
+				# 竖直段要把栅栏转 90°：旋转后局部的 +X 变世界的 +Y，
+				# 局部的 +Y 变世界的 -X，所以原点要放在右边缘。
+				_fence_rotated(Vector2(a.x - TRACK_HALF, y0), h)
+				_fence_rotated(Vector2(a.x + TRACK_HALF + FENCE_H, y0), h)
+
+func _fence_rotated(origin: Vector2, length: float) -> void:
+	draw_set_transform(origin, PI * 0.5, Vector2.ONE)
+	draw_texture_rect(tex_fence, Rect2(0, 0, length, FENCE_H),
+		true, Palette.FENCE_TINT)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 ## 沿赛道铺出砖缝。纯色带子太平，加上横缝之后才像一条「路」。
 func _draw_seams() -> void:
@@ -614,20 +686,32 @@ func _draw_seams() -> void:
 			draw_line(a - n, a + n, c, 2.0)
 		d += step
 
-## 沿路撒方向箭头，让玩家一眼看出怪往哪走
-func _draw_arrows() -> void:
-	var step: float = Balance.TRACK_LENGTH / 22.0
-	var d: float = step
+## 流动纹理：一串顺着路往前滚的短条。
+## 比那排静止的三角形好 —— 方向是「看出来」的而不是「读出来」的，
+## 而且不用在路面上戳一堆箭头，路本身干净多了。
+func _draw_flow() -> void:
+	var step: float = Balance.TRACK_LENGTH / 30.0
+	var offset: float = fmod(flow_t * 2.2, step)
+	var c: Color = Palette.TEXT
+	c.a = 0.16
+	var d: float = offset
 	while d < Balance.TRACK_LENGTH:
 		var a: Vector2 = point_at(d)
-		var b: Vector2 = point_at(minf(d + 0.2, Balance.TRACK_LENGTH))
+		var b: Vector2 = point_at(minf(d + 0.28, Balance.TRACK_LENGTH))
 		var dir: Vector2 = (b - a).normalized()
 		if dir.length_squared() > 0.1:
-			var n: Vector2 = Vector2(-dir.y, dir.x)
-			draw_colored_polygon(PackedVector2Array([
-				a + dir * 5.0, a - dir * 3.0 + n * 4.0, a - dir * 3.0 - n * 4.0,
-			]), Palette.ARROW)
+			var n: Vector2 = Vector2(-dir.y, dir.x) * (TRACK_HALF - 3.0)
+			draw_line(a - n, a + n, c, 2.0)
 		d += step
+
+## 起点闸门。绿色，跟终点的红色闸门对应 —— 一眼看出怪从哪来、往哪去。
+func _draw_spawn() -> void:
+	var start: Vector2 = path_points[0]
+	var c: Color = Palette.OK
+	for i: int in 5:
+		var w: float = 14.0 if i % 2 == 0 else 10.0
+		var cc: Color = c if i % 2 == 0 else c.darkened(0.25)
+		draw_rect(Rect2(0, start.y - 18.0 + float(i) * 7.2, w, 7.0), cc)
 
 ## 终点：怪走到这里就扣命
 func _draw_goal() -> void:
@@ -706,9 +790,19 @@ func _draw_enemies() -> void:
 		if not e.alive:
 			continue
 		var p: Vector2 = point_at(e.distance)
-		var rad: float = 14.0 if e.is_elite else 8.5
+		var rad: float = 8.5
+		if e.is_boss:
+			rad = 22.0
+		elif e.is_elite:
+			rad = 14.0
 		var c: Color = Palette.of(e.element)
-		var tex: Texture2D = tex_elite if e.is_elite else tex_enemy.get(e.element, null)
+		# 精英和 BOSS 各有自己的精灵图，轮廓跟杂兵完全不同 ——
+		# 所以不用再画金圈红圈去标记，看一眼就知道这只不一样。
+		var tex: Texture2D = tex_enemy.get(e.element, null)
+		if e.is_boss and tex_boss != null:
+			tex = tex_boss
+		elif e.is_elite and tex_elite != null:
+			tex = tex_elite
 		if tex != null:
 			var half: float = rad * 1.85
 			draw_texture_rect(tex, Rect2(p - Vector2(half, half),
@@ -720,8 +814,6 @@ func _draw_enemies() -> void:
 			draw_rect(Rect2(p - Vector2(rad + 2.0, rad + 2.0),
 				Vector2(rad + 2.0, rad + 2.0) * 2.0), Palette.BG)
 			draw_rect(Rect2(p - Vector2(rad, rad), Vector2(rad, rad) * 2.0), c)
-		if e.is_elite:
-			draw_arc(p, rad + 5.0, 0.0, TAU, 24, Palette.GOLD, 2.0)
 		# 精灵图本身已经代表属性了，不再画额外的元素点 —— 那玩意儿小得像另一只怪
 		var w: float = rad * 2.6
 		var frac: float = clampf(e.hp / e.max_hp, 0.0, 1.0)
@@ -872,8 +964,9 @@ func _layout() -> void:
 
 ## 蛇行赛道：左上进场，来回四趟，左下出场
 func _make_path() -> void:
-	var top: float = HUD_H + 46.0
-	var bot: float = field_bottom - 40.0
+	var top: float = HUD_H + 34.0
+	# 留够下边距：赛道半宽 13 + 栅栏 9 + 提示文字那一行
+	var bot: float = field_bottom - 56.0
 	var right: float = vw - 74.0
 	var left: float = 104.0
 	var ys: Array[float] = []
@@ -1122,15 +1215,19 @@ func _build_info_panel(on_close: Callable, right_color: Color) -> Dictionary:
 	title.add_theme_color_override("font_color", Palette.TEXT)
 	box.add_child(title)
 
-	var left: Label = Label.new()
-	left.add_theme_font_size_override("font_size", 13)
-	left.add_theme_color_override("font_color", Palette.TEXT)
-	box.add_child(left)
-
-	var right: Label = Label.new()
-	right.add_theme_font_size_override("font_size", 13)
-	right.add_theme_color_override("font_color", right_color)
-	box.add_child(right)
+	# 单栏 + 滚动。两栏并排看着紧凑，但内容一多就直接溢出屏幕。
+	# 用 RichTextLabel 而不是 Label：它自带滚动，而且支持 BBCode 上色 ——
+	# 一整屏白字玩家根本不会读，关键信息必须能被扫到。
+	var body: RichTextLabel = RichTextLabel.new()
+	body.bbcode_enabled = true
+	body.scroll_active = true
+	body.fit_content = false
+	body.add_theme_font_override("normal_font", font)
+	body.add_theme_font_override("bold_font", font)
+	body.add_theme_font_size_override("normal_font_size", 14)
+	body.add_theme_font_size_override("bold_font_size", 14)
+	body.add_theme_color_override("default_color", right_color)
+	box.add_child(body)
 
 	var close: Button = Button.new()
 	close.text = "关闭"
@@ -1140,67 +1237,24 @@ func _build_info_panel(on_close: Callable, right_color: Color) -> Dictionary:
 	box.add_child(close)
 
 	return {"layer": layer, "dim": dim, "box": box,
-		"title": title, "left": left, "right": right, "close": close}
+		"title": title, "body": body, "close": close}
 
 func _build_buff_layer() -> void:
-	var d: Dictionary = _build_info_panel(_close_buffs, Palette.OK)
+	var d: Dictionary = _build_info_panel(_close_buffs, Palette.TEXT)
 	buff_layer = d["layer"]
 	buff_dim = d["dim"]
 	buff_box = d["box"]
 	buff_title = d["title"]
-	buff_left = d["left"]
-	buff_right = d["right"]
+	buff_body = d["body"]
 
 func _build_help_layer() -> void:
 	var d: Dictionary = _build_info_panel(_close_help, Palette.TEXT)
 	help_layer = d["layer"]
 	help_box = d["box"]
 	help_title = d["title"]
-	help_left = d["left"]
-	help_right = d["right"]
+	help_body = d["body"]
 	help_title.text = "游戏说明"
-	help_left.text = """【目标】
-撑过 10 波，生命归零就输。
-漏怪扣命：杂兵 1，精英 5。
-
-【属性克制】　火 → 木 → 水 → 火
-打对 ×2.6，打错 ×0.3 —— 差 8.7 倍，
-不靠克制基本打不过。
-怪的颜色就是它的属性，红火 / 绿木 / 蓝水。
-
-【塔】
-塔没有射程，全部打得到。
-塔位越后面越贵（60 → 808）。
-先建无属性塔，再升级成火/木/水。
-升级后不能改属性，只能拆掉重建。
-属性塔可练级，每级多打一个目标。
-塔位上的小方点＝当前等级 / 上限。
-
-【塔位下的 ×倍率】
-这座塔对「当前这波怪」的实际倍率。
-绿＝克制　白＝普通　红＝几乎无效
-看到红色就该换属性或拆掉重建。"""
-	help_right.text = """【技能】
-同属性凑满 3 座塔就解锁。
-全屏 AOE，伤害一样吃克制倍率。
-威力＝该属性所有塔的「等级总和」，
-练精一种属性比铺满三种更强。
-冷却 18 秒，每波开场重置。
-
-火　AOE ＋ 灼烧（每 0.2 秒跳伤）
-水　AOE ＋ 减速 50%
-木　AOE ＋ 缠绕（完全定身）
-
-【奖励】
-每波结束给 3 次三选一。
-稀有度 S > A > B > C，S 最难抽到。
-可重复领取，效果累加。
-卡片第三行会写目前叠到多少。
-
-【其他】
-战斗中一样能建塔、升级、拆除。
-赏金即时到账，当场就能花。
-每波可免费拆除 1 次（全额返还）。"""
+	help_body.text = _help_bbcode()
 
 func _build_title_layer() -> void:
 	# 盖在 buff/help 之前建立，这样说明面板能开在标题页之上
@@ -1247,6 +1301,84 @@ func _build_title_layer() -> void:
 func _on_quit() -> void:
 	get_tree().quit()
 
+## 说明文案。颜色从当前 preset 的调色板取，换风格也不会撞色。
+##
+## 一整屏白字玩家根本不会读 —— 所以文案要短，而且关键信息必须能被「扫」到：
+## 小标题统一金色，属性词用各自的属性色，数值里「好的」绿、「坏的」红，
+## 补充性的句子压成暗色，让眼睛自动跳过。
+func _help_bbcode() -> String:
+	var h: Callable = func(c: Color) -> String: return c.to_html(false)
+	var fire: String = h.call(Palette.FIRE)
+	var wood: String = h.call(Palette.WOOD)
+	var water: String = h.call(Palette.WATER)
+	var gold: String = h.call(Palette.GOLD)
+	var ok: String = h.call(Palette.OK)
+	var bad: String = h.call(Palette.LIFE)
+	var hot: String = h.call(Palette.STRONG)
+	var dim: String = h.call(Palette.DIM)
+	var t: Array[String] = []
+
+	t.append("[color=#%s]【目标】[/color]" % gold)
+	t.append("撑过 10 波，生命归零就输。")
+	t.append("[color=#%s]漏怪扣命：杂兵 1，精英 5，大BOSS 10。[/color]" % dim)
+	t.append("")
+	t.append("[color=#%s]【一局的节奏】[/color]" % gold)
+	t.append("1~3 波　三种属性各来一波 [color=#%s]（三种塔都得造）[/color]" % dim)
+	t.append("4~6 波　两两混合，[color=#%s]第 4、6 波有精英[/color]" % hot)
+	t.append("7~9 波　三色混战，[color=#%s]第 8 波有精英[/color]" % hot)
+	t.append("第 10 波　[color=#%s]大 BOSS[/color] 压轴" % bad)
+	t.append("[color=#%s]精英和 BOSS 的属性是单独随机的，不跟杂兵走 —— 看预告。[/color]" % dim)
+	t.append("")
+	t.append("[color=#%s]【属性克制 —— 最重要的一条】[/color]" % gold)
+	t.append("[color=#%s]火[/color] → [color=#%s]木[/color] → [color=#%s]水[/color] → [color=#%s]火[/color]"
+		% [fire, wood, water, fire])
+	t.append("打对 [color=#%s]×2.6[/color]，打错 [color=#%s]×0.3[/color]，差 [color=#%s]8.7 倍[/color]。"
+		% [ok, bad, hot])
+	t.append("[color=#%s]怪的颜色就是它的属性。不靠克制基本打不过。[/color]" % dim)
+	t.append("")
+	t.append("[color=#%s]【三种怪的脾气】[/color]" % gold)
+	t.append("[color=#%s]火[/color]　跑得快但不抗打 —— [color=#%s]不先处理很快就漏[/color]" % [fire, bad])
+	t.append("[color=#%s]木[/color]　慢而厚 —— 有时间磨，但磨得久" % wood)
+	t.append("[color=#%s]水[/color]　[color=#%s]死时给全场怪回血[/color] —— 不集中清掉会拖成持久战"
+		% [water, bad])
+	t.append("")
+	t.append("[color=#%s]【塔位下的 ×倍率】[/color]" % gold)
+	t.append("这座塔对[color=#%s]当前这波怪[/color]的实际伤害倍率。" % hot)
+	t.append("[color=#%s]绿＝克制[/color]　白＝普通　[color=#%s]红＝几乎无效[/color]" % [ok, bad])
+	t.append("[color=#%s]看到红色就该换属性或拆掉重建。[/color]" % dim)
+	t.append("")
+	t.append("[color=#%s]【塔】[/color]" % gold)
+	t.append("没有射程，全部打得到。塔位越后面越贵（60 → 810）。")
+	t.append("先建无属性塔，再升级成属性塔；[color=#%s]升级后不能改属性[/color]，只能拆掉重建。" % bad)
+	t.append("[color=#%s]整局只有 1 次免费拆除[/color]（全额返还），之后只退 60%%。" % bad)
+	t.append("属性塔可练级，每级多打一个目标。[color=#%s]塔位上的小方点＝当前等级。[/color]" % dim)
+	t.append("")
+	t.append("[color=#%s]【技能】[/color]" % gold)
+	t.append("同属性凑满 [color=#%s]3 座塔[/color]解锁，冷却 18 秒，每波开场重置。" % hot)
+	t.append("全屏 AOE，[color=#%s]伤害一样吃克制倍率[/color] —— 不是绕过克制的后门。" % bad)
+	t.append("威力＝该属性所有塔的[color=#%s]等级总和[/color]，练精一种比铺满三种强。" % hot)
+	t.append("　[color=#%s]火[/color] 灼烧　　[color=#%s]水[/color] 减速 50%%　　[color=#%s]木[/color] 定身"
+		% [fire, water, wood])
+	t.append("")
+	t.append("[color=#%s]【奖励】[/color]" % gold)
+	t.append("每波 3 次三选一，[color=#%s]开局额外送 3 次[/color]。" % ok)
+	t.append("稀有度 [color=#%s]S[/color] > [color=#%s]A[/color] > [color=#%s]B[/color] > [color=#%s]C[/color]，S 最难抽到。"
+		% [h.call(Palette.rarity(3)), h.call(Palette.rarity(2)),
+			h.call(Palette.rarity(1)), h.call(Palette.rarity(0))])
+	t.append("可重复领取、效果累加。[color=#%s]堆到封顶就不再出现。[/color]" % dim)
+	t.append("刷新第一次免费，[color=#%s]之后越刷越贵[/color]。" % bad)
+	t.append("")
+	t.append("[color=#%s]【利息】[/color]" % gold)
+	t.append("每波结束按[color=#%s]当时手上的存款[/color]额外给钱，封顶 30%%。" % hot)
+	t.append("[color=#%s]钱留着不花会生息，花光了这一波一分都没有。[/color]" % dim)
+	t.append("[color=#%s]领了之后，HUD 上会直接写这一波能进账多少。[/color]" % dim)
+	t.append("")
+	t.append("[color=#%s]【其他】[/color]" % gold)
+	t.append("[color=#%s]战斗中一样能建塔、升级、拆除[/color]，赏金即时到账。" % ok)
+	t.append("[color=#%s]精英[/color]和[color=#%s]大BOSS[/color]的样子跟杂兵完全不同，看轮廓就认得出。"
+		% [hot, bad])
+	return "\n".join(t)
+
 func _on_help() -> void:
 	if help_layer.visible:
 		_close_help()
@@ -1273,9 +1405,12 @@ func _refresh_buff_panel() -> void:
 	var rows: Array[String] = []
 	for e: Dictionary in run.taken_list():
 		rows.append("%s　×%d" % [e["title"], e["count"]])
-	buff_left.text = "已领取的奖励\n\n%s" % ("\n".join(rows) if not rows.is_empty() else "（还没领过）")
-	var lines: Array[String] = run.mods.summary_lines()
-	buff_right.text = "换算成实际效果\n\n%s" % ("\n".join(lines) if not lines.is_empty() else "（无）")
+	var lines2: Array[String] = run.mods.summary_lines()
+	var gold: String = Palette.GOLD.to_html(false)
+	var ok: String = Palette.OK.to_html(false)
+	buff_body.text = "[color=#%s]【已领取的奖励】[/color]\n%s\n\n[color=#%s]【换算成实际效果】[/color]\n[color=#%s]%s[/color]" % [
+		gold, "\n".join(rows) if not rows.is_empty() else "（还没领过）",
+		gold, ok, "\n".join(lines2) if not lines2.is_empty() else "（无）"]
 
 ## 所有位置都按实际视口算。窗口一变就重新摆一次。
 func _position_ui() -> void:
@@ -1286,10 +1421,14 @@ func _position_ui() -> void:
 	lbl_wave.size = Vector2(150, 28)
 	# 有图标的时候文字往右让 26px，图标画在 _draw 里
 	var icon_pad: float = 26.0 if tex_gold != null else 0.0
-	lbl_gold.position = Vector2(166 + icon_pad, 6)
-	lbl_gold.size = Vector2(120, 28)
-	lbl_lives.position = Vector2(324 + icon_pad, 6)
-	lbl_lives.size = Vector2(120, 28)
+	# 图标画在 y 7..27（中心 17），数字得跟它对齐 ——
+	# Label 默认顶对齐，不设 CENTER 的话数字会比图标低一截。
+	lbl_gold.position = Vector2(166 + icon_pad, 5)
+	lbl_gold.size = Vector2(120, 24)
+	lbl_gold.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl_lives.position = Vector2(324 + icon_pad, 5)
+	lbl_lives.size = Vector2(120, 24)
+	lbl_lives.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	lbl_preview.position = Vector2(16, 46)
 	lbl_preview.size = Vector2(440, 22)
 	lbl_hint.position = Vector2(0, field_bottom - 26.0)
@@ -1316,8 +1455,8 @@ func _position_ui() -> void:
 		bar.size = Vector2(76, 4)
 		sx += 80.0
 
-	_place_panel(buff_layer, buff_box, buff_title, buff_left, buff_right, 600.0, 430.0)
-	_place_panel(help_layer, help_box, help_title, help_left, help_right, 800.0, 9999.0)
+	_place_panel(buff_layer, buff_box, buff_title, buff_body, 560.0, 430.0)
+	_place_panel(help_layer, help_box, help_title, help_body, 640.0, 9999.0)
 
 	title_layer.size = Vector2(vw, vh)
 	var tdim: ColorRect = title_layer.get_node_or_null("Dim")
@@ -1386,7 +1525,7 @@ func _position_ui() -> void:
 	over_again.size = Vector2(140, 44)
 
 func _place_panel(layer: Control, box: Panel, title: Label,
-		left: Label, right: Label, want_w: float, want_h: float) -> void:
+		body: RichTextLabel, want_w: float, want_h: float) -> void:
 	layer.size = Vector2(vw, vh)
 	var dim: ColorRect = layer.get_child(0)
 	dim.position = Vector2.ZERO
@@ -1397,10 +1536,8 @@ func _place_panel(layer: Control, box: Panel, title: Label,
 	box.size = Vector2(bw, bh)
 	title.position = Vector2(0, 12)
 	title.size = Vector2(bw, 26)
-	left.position = Vector2(28, 46)
-	left.size = Vector2(bw * 0.46, bh - 60.0)
-	right.position = Vector2(bw * 0.52, 46)
-	right.size = Vector2(bw * 0.45, bh - 60.0)
+	body.position = Vector2(26, 46)
+	body.size = Vector2(bw - 52.0, bh - 60.0)
 	# 关闭放右上角而不是底部置中：底部那一排会吃掉整整一行高度，
 	# 说明面板的内容本来就塞不下，能省则省。
 	var close: Button = box.get_node_or_null("Close")
@@ -1430,7 +1567,14 @@ func _refresh_hud() -> void:
 		lbl_preview.text = "本波 %s　　已杀 %d　漏 %d" % [
 			w.preview(), run.battle.killed, run.battle.leaked]
 	elif w != null:
-		lbl_preview.text = "下一波 %s　　免费拆除 %d 次" % [w.preview(), run.free_sells]
+		# 利息直接写在 HUD 上：「这笔钱花掉还是留着」是个高频决策，
+		# 不该让玩家去翻奖励卡片才知道留着能生多少。
+		var bits: Array[String] = ["下一波 %s" % w.preview()]
+		if run.mods.effective_interest() > 0.0:
+			bits.append("利息 +%d" % run.interest_preview())
+		if run.free_sells > 0:
+			bits.append("免费拆除 %d 次" % run.free_sells)
+		lbl_preview.text = "　　".join(bits)
 	else:
 		lbl_preview.text = ""
 
