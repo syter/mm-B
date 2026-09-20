@@ -1487,6 +1487,10 @@ func _changelog_bbcode() -> String:
 	var dim: String = h.call(Palette.DIM)
 	var ok: String = h.call(Palette.OK)
 	var hot: String = h.call(Palette.STRONG)
+	var bad: String = h.call(Palette.LIFE)
+	var fire: String = h.call(Palette.FIRE)
+	var wood: String = h.call(Palette.WOOD)
+	var water: String = h.call(Palette.WATER)
 	var t: Array[String] = []
 
 	t.append("[color=#%s]v1.2[/color]" % gold)

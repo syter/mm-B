@@ -4,6 +4,9 @@ extends SceneTree
 ## 无头模式下 _draw 不会被调用，所以这里验的是状态机和界面刷新，不是画面。
 ## 跑法：godot --headless --path . --script res://tests/regression/test_ui_smoke.gd
 
+## 这个测试本身的断言下限。测试函数被静默中止时总数会掉下来。
+const MIN_ASSERTIONS: int = 60
+
 var _passed: int = 0
 var _failed: int = 0
 
@@ -90,6 +93,12 @@ func _run_test(game: Node2D) -> void:
 	_eq(game.run.gold, Balance.START_GOLD, "重来后金钱归初始")
 	_false(game.over_layer.visible, "重来后结算面板隐藏")
 
+	# 断言总数必须是固定的。GDScript 调用不存在的函数只会打一行错误然后
+	# 中止当前函数，剩下的断言被静默跳过，总数照样显示「0 失败」——
+	# 所以这里额外盯住总数，少了就说明中间有东西被吞了。
+	_true(_passed + _failed >= MIN_ASSERTIONS,
+		"断言总数 %d 不该少于 %d（少了说明有测试被静默中止）"
+			% [_passed + _failed, MIN_ASSERTIONS])
 	print("\n%d 通过, %d 失败" % [_passed, _failed])
 	if _failed > 0:
 		quit(1)
@@ -98,7 +107,9 @@ func _run_test(game: Node2D) -> void:
 ## 曾经因为界面直接呼叫 battle.step() 而不是 run.step_battle()，
 ## 冷却卡在 18 秒永远不动，技能只能放一次。
 func _test_skill_cooldown_ticks(game: Node2D) -> void:
-	game._new_run()
+	# _reset_run 只重置状态不改阶段，这里手动回到建造阶段
+	game._reset_run()
+	game.phase = 0
 	var run: RunState = game.run
 	run.gold = 999999
 	for i: int in Balance.SKILL_REQUIRED_TOWERS:
@@ -117,12 +128,20 @@ func _test_skill_cooldown_ticks(game: Node2D) -> void:
 	game._process(0.5)
 	var cd1: float = run.skill_remaining(Types.Element.FIRE)
 	_true(cd1 < cd0, "界面推进一帧后冷却确实减少了（%.2f → %.2f）" % [cd0, cd1])
-	# 推到冷却结束
+	# 推到冷却结束。注意：冷却只在战斗阶段走 —— 波次打完进了奖励阶段，
+	# _process 就不再推进战斗，冷却会停在原地。所以这里要么等到冷却归零，
+	# 要么等到这一波结束，两个都算正常。
 	guard = 0
-	while run.skill_remaining(Types.Element.FIRE) > 0.0 and guard < 400:
+	while run.skill_remaining(Types.Element.FIRE) > 0.0 \
+			and game.phase == 1 and guard < 400:
 		game._process(0.2)
 		guard += 1
-	_true(guard < 400, "冷却会走完，技能能再放")
+	_true(guard < 400, "循环会结束，不会卡死")
+	if game.phase == 1:
+		_true(run.skill_remaining(Types.Element.FIRE) <= 0.0,
+			"还在战斗中的话，冷却会走完，技能能再放")
+	else:
+		_true(true, "这一波在冷却走完前就打完了（冷却只在战斗中走）")
 
 ## 模拟玩家操作：有钱就把塔位填满，并升级成克制下一波的属性
 func _do_build(game: Node2D) -> void:
