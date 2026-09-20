@@ -100,9 +100,11 @@ UI 只读规则的结果，不反向修改规则状态。
 把游戏发给别人玩（Windows 单文件 / 网页版）见 [`DEPLOY.md`](DEPLOY.md)。
 
 ```bash
-godot --headless --path . --export-release "Windows Desktop" "build/windows/属性塔防.exe"
-godot --headless --path . --export-release "Web" "build/web/index.html"
+./build.sh          # Windows exe + 网页版，各自压成带版本号的 zip
+./build.sh win      # 只打 Windows
 ```
+
+脚本会先跑回归测试，没过就拒绝打包。
 
 > `export_presets.cfg` 在 `.gitignore` 里（那个文件可能装签名密钥），
 > 所以克隆下来之后要自己在编辑器里建导出预设，或者照 `DEPLOY.md` 配。

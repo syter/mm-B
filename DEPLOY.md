@@ -34,9 +34,16 @@ Windows 版留给想离线玩或者网页卡的人。
 ## 重新导出
 
 ```bash
-godot --headless --path . --export-release "Windows Desktop" "build/windows/属性塔防.exe"
-godot --headless --path . --export-release "Web" "build/web/index.html"
+./build.sh          # 两个都打（约 15 秒）
+./build.sh win      # 只打 Windows
+./build.sh web      # 只打网页版
 ```
+
+产物是 `build/属性塔防-v<版本>-windows.zip` 和 `-web.zip`，
+版本号读 `project.godot` 里的 `config/version`，发新版改那一行就行。
+
+脚本会**先跑一遍回归测试，没过就拒绝打包**（真要强行打加 `--skip-tests`）。
+导出模板没装的话也会提前拦住，并告诉你去哪下、放哪。
 
 需要先装导出模板（1.28GB，Godot 默认不带）：
 从 https://github.com/godotengine/godot/releases/tag/4.7.2-stable
