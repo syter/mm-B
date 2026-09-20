@@ -97,9 +97,17 @@ var help_layer: Control
 var help_box: Panel
 var help_title: Label
 var help_body: RichTextLabel
+var log_layer: Control
+var log_box: Panel
+var log_title: Label
+var log_body: RichTextLabel
 var title_layer: Control
 var title_name: Label
 var title_sub: Label
+## 标题页选的难度，开局时套到 Balance 上
+var chosen_difficulty: Balance.Difficulty = Balance.Difficulty.EASY
+var diff_buttons: Dictionary = {}
+var title_diff_hint: Label
 var buff_layer: Control
 var buff_dim: ColorRect
 var buff_box: Panel
@@ -219,17 +227,20 @@ func _reset_run() -> void:
 	reward_layer.visible = false
 	buff_layer.visible = false
 	help_layer.visible = false
+	log_layer.visible = false
 	reward_is_opening = false
 	_refresh()
 
 func _show_title() -> void:
 	phase = Phase.TITLE
 	title_layer.visible = true
+	_refresh_difficulty_buttons()
 	_refresh()
 
 ## 开始游戏：先送三次奖励再打第一波。
 ## 开局就让玩家做三次选择，第一波之前手上已经有东西了，爽感前置。
 func _start_game() -> void:
+	Balance.apply_difficulty(chosen_difficulty)
 	_reset_run()
 	title_layer.visible = false
 	reward_is_opening = true
@@ -314,6 +325,22 @@ func _burst(pos: Vector2, color: Color, amount: int) -> void:
 		})
 
 func _collect_beams() -> void:
+	# 精英放技能：飘个技能名 + 全屏闪一下该属性的颜色。
+	# 不给反馈的话玩家只会觉得「怪突然变快了」，不知道是被精英加了 buff。
+	for ec: Dictionary in run.battle.last_elite_casts:
+		var ecolor: Color = Palette.of(ec["element"])
+		var epos: Vector2 = point_at(float(ec["dist"]))
+		while floaters.size() >= MAX_FLOATERS:
+			floaters.remove_at(0)
+		floaters.append({
+			"pos": epos + Vector2(0, -34.0), "dmg": 0, "key": -1,
+			"text": String(ec["name"]), "color": ecolor,
+			"size": 26 if bool(ec.get("boss", false)) else 21, "life": FLOAT_LIFE * 1.8,
+		})
+		skill_flash = {"color": ecolor, "life": SKILL_FLASH_LIFE}
+		_burst(epos, ecolor, 16)
+		sfx.play("skill", -11.0, 120)
+
 	var sk: Dictionary = run.battle.last_skill
 	if not sk.is_empty() and float(sk["time"]) != _last_skill_time:
 		_last_skill_time = float(sk["time"])
@@ -597,9 +624,9 @@ func _draw_hud_icons() -> void:
 		return
 	var sz: float = 20.0
 	if tex_gold != null:
-		draw_texture_rect(tex_gold, Rect2(166, 7, sz, sz), false, Palette.GOLD)
+		draw_texture_rect(tex_gold, Rect2(216, 7, sz, sz), false, Palette.GOLD)
 	if tex_life != null:
-		draw_texture_rect(tex_life, Rect2(324, 7, sz, sz), false, Palette.LIFE)
+		draw_texture_rect(tex_life, Rect2(374, 7, sz, sz), false, Palette.LIFE)
 
 const TRACK_HALF: float = 13.0
 const FENCE_H: float = 9.0
@@ -883,7 +910,7 @@ func _draw_gold_floaters() -> void:
 		var a: float = clampf(float(g["life"]) / 0.9, 0.0, 1.0)
 		var c: Color = Palette.GOLD
 		c.a = minf(1.0, a * 1.8)
-		draw_string(font, Vector2(252.0, y), String(g["text"]),
+		draw_string(font, Vector2(302.0, y), String(g["text"]),
 			HORIZONTAL_ALIGNMENT_LEFT, 80.0, 15, c)
 		y += 17.0
 
@@ -1069,6 +1096,7 @@ func _build_ui() -> void:
 	btn_help = _button("?", Palette.PANEL_HI, _on_help)
 	_build_buff_layer()
 	_build_help_layer()
+	_build_log_layer()
 	_build_title_layer()
 
 func _build_reward_layer() -> void:
@@ -1284,9 +1312,29 @@ func _build_title_layer() -> void:
 	title_sub.text = "火 → 木 → 水 → 火　·　十波怪　·　不靠克制打不过"
 	title_layer.add_child(title_sub)
 
+	# 难度选择。三个档只动 HP_GROWTH，但体感差距很明显。
+	for d: Balance.Difficulty in [Balance.Difficulty.EASY,
+			Balance.Difficulty.HARD, Balance.Difficulty.HELL]:
+		var dd: Balance.Difficulty = d
+		var b: Button = Button.new()
+		b.text = Balance.DIFFICULTY_NAMES[dd]
+		b.add_theme_font_size_override("font_size", 16)
+		_style(b, Palette.PANEL_HI)
+		b.pressed.connect(func() -> void: _choose_difficulty(dd))
+		b.name = "D%d" % int(dd)
+		title_layer.add_child(b)
+		diff_buttons[dd] = b
+
+	title_diff_hint = Label.new()
+	title_diff_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title_diff_hint.add_theme_font_size_override("font_size", 13)
+	title_diff_hint.add_theme_color_override("font_color", Palette.DIM)
+	title_layer.add_child(title_diff_hint)
+
 	var specs: Array = [
 		["开始游戏", Palette.OK, Callable(self, "_start_game")],
 		["游戏说明", Palette.PANEL_HI, Callable(self, "_on_help")],
+		["版本更新日志", Palette.PANEL_HI, Callable(self, "_on_log")],
 		["退出游戏", Palette.PANEL_HI, Callable(self, "_on_quit")],
 	]
 	for i: int in specs.size():
@@ -1297,6 +1345,24 @@ func _build_title_layer() -> void:
 		b.pressed.connect(specs[i][2])
 		b.name = "T%d" % i
 		title_layer.add_child(b)
+
+func _choose_difficulty(d: Balance.Difficulty) -> void:
+	chosen_difficulty = d
+	sfx.play("select", -18.0)
+	_refresh_difficulty_buttons()
+
+func _refresh_difficulty_buttons() -> void:
+	for d: Balance.Difficulty in diff_buttons.keys():
+		var b: Button = diff_buttons[d]
+		var on: bool = d == chosen_difficulty
+		_style(b, Palette.OK if on else Palette.PANEL_HI,
+			Palette.GOLD if on else Color(0, 0, 0, 0))
+	var hints: Dictionary = {
+		Balance.Difficulty.EASY: "怪物血量成长最慢，适合先摸清克制关系",
+		Balance.Difficulty.HARD: "怪物血量成长更快，配错属性会立刻吃亏",
+		Balance.Difficulty.HELL: "血量疯涨，不精打细算撑不到第 10 波",
+	}
+	title_diff_hint.text = String(hints[chosen_difficulty])
 
 func _on_quit() -> void:
 	get_tree().quit()
@@ -1327,6 +1393,20 @@ func _help_bbcode() -> String:
 	t.append("4~6 波　两两混合，[color=#%s]第 4、6 波有精英[/color]" % hot)
 	t.append("7~9 波　三色混战，[color=#%s]第 8 波有精英[/color]" % hot)
 	t.append("第 10 波　[color=#%s]大 BOSS[/color] 压轴" % bad)
+	t.append("")
+	t.append("[color=#%s]【精英会放技能】[/color]" % gold)
+	t.append("出场时放一次，之后每走完一段路再放一次。")
+	t.append("[color=#%s]简单 1 次 / 困难 2 次 / 地狱 3 次。[/color]" % dim)
+	t.append("　[color=#%s]火 · 浴火[/color]　全场杂兵跑得更快" % fire)
+	t.append("　[color=#%s]木 · 分裂[/color]　杂兵死时裂成两只半血的（只裂一次）" % wood)
+	t.append("　[color=#%s]水 · 潮涌[/color]　全场杂兵血量[color=#%s]回满[/color]" % [water, bad])
+	t.append("")
+	t.append("[color=#%s]【大 BOSS】[/color]" % gold)
+	t.append("[color=#%s]血量每掉一段就换一种属性[/color] —— 三种塔都得够强，" % hot)
+	t.append("[color=#%s]只堆一种打不动它后面的形态。[/color]" % dim)
+	t.append("每个触发点[color=#%s]召唤一批护卫[/color]，分散你的火力。" % hot)
+	t.append("[color=#%s]死时裂成三只精英（火木水各一）[/color] ——" % bad)
+	t.append("[color=#%s]别把技能和钱在本体身上一次打光。[/color]" % dim)
 	t.append("[color=#%s]精英和 BOSS 的属性是单独随机的，不跟杂兵走 —— 看预告。[/color]" % dim)
 	t.append("")
 	t.append("[color=#%s]【属性克制 —— 最重要的一条】[/color]" % gold)
@@ -1379,6 +1459,75 @@ func _help_bbcode() -> String:
 		% [hot, bad])
 	return "\n".join(t)
 
+func _build_log_layer() -> void:
+	var d: Dictionary = _build_info_panel(_close_log, Palette.TEXT)
+	log_layer = d["layer"]
+	log_box = d["box"]
+	log_title = d["title"]
+	log_body = d["body"]
+	log_title.text = "版本更新日志"
+	log_body.text = _changelog_bbcode()
+
+func _on_log() -> void:
+	if log_layer.visible:
+		_close_log()
+		return
+	sfx.play("select", -18.0)
+	log_body.text = _changelog_bbcode()
+	log_layer.visible = true
+
+func _close_log() -> void:
+	log_layer.visible = false
+
+## 更新日志。写给玩家看的，不是 commit log ——
+## 只写「这一版你玩起来会有什么不同」，不写重构了哪个类。
+func _changelog_bbcode() -> String:
+	var h: Callable = func(c: Color) -> String: return c.to_html(false)
+	var gold: String = h.call(Palette.GOLD)
+	var dim: String = h.call(Palette.DIM)
+	var ok: String = h.call(Palette.OK)
+	var hot: String = h.call(Palette.STRONG)
+	var t: Array[String] = []
+
+	t.append("[color=#%s]v1.2[/color]" % gold)
+	t.append("· 标题页可以选[color=#%s]难度[/color]了：简单 / 困难 / 地狱" % hot)
+	t.append("· 加了这个[color=#%s]更新日志[/color]页" % hot)
+	t.append("· [color=#%s]克制差距从 8.7 倍拉到 12 倍[/color]" % hot)
+	t.append("[color=#%s]  打错属性现在比不带属性还惨。[/color]" % dim)
+	t.append("· [color=#%s]精英会放技能了[/color]：" % hot)
+	t.append("[color=#%s]  出场放一次，之后每走完一段路再放一次[/color]" % dim)
+	t.append("[color=#%s]  简单 1 次 / 困难 2 次 / 地狱 3 次[/color]" % dim)
+	t.append("　[color=#%s]火 · 浴火[/color]　全场杂兵跑得更快" % fire)
+	t.append("　[color=#%s]木 · 分裂[/color]　杂兵死时裂成两只半血的" % wood)
+	t.append("　[color=#%s]水 · 潮涌[/color]　全场杂兵血量回满" % water)
+	t.append("· [color=#%s]大 BOSS 三件套[/color]：" % bad)
+	t.append("[color=#%s]  血量每掉一段换一种属性 / 召唤护卫 / 死时裂成三只精英[/color]" % dim)
+	t.append("· HUD 和结算页会标出当前难度")
+	t.append("")
+	t.append("[color=#%s]v1.1[/color]" % gold)
+	t.append("· 奖励从 16 张加到 [color=#%s]24 张[/color]" % hot)
+	t.append("[color=#%s]  新增处决、裂变、连杀、蓄力、锁定、奠基、回春、独尊[/color]" % dim)
+	t.append("· 三种属性有了各自的脾气：")
+	t.append("[color=#%s]  火跑得快但脆 / 木慢而厚 / 水死时给全场回血[/color]" % dim)
+	t.append("· 一局的节奏重排：")
+	t.append("[color=#%s]  1~3 波三种属性各来一波，4~6 波两两组合，7 波起三色混战[/color]" % dim)
+	t.append("[color=#%s]  精英挪到 4/6/8 波，第 10 波换成大 BOSS[/color]" % dim)
+	t.append("· 精英和 BOSS 的属性[color=#%s]单独随机[/color]，不跟本波杂兵走" % hot)
+	t.append("· [color=#%s]堆到封顶的奖励不再出现[/color]在三选一里" % ok)
+	t.append("· 刷新价格重做，不再是几块钱的白送")
+	t.append("· 免费拆除从「每波一次」改成[color=#%s]整局一次[/color]" % hot)
+	t.append("· 赛道重做：沙土路面、木栅栏、起点绿闸门 / 终点红闸门")
+	t.append("· 杂兵 / 精英 / BOSS 各有自己的样子")
+	t.append("· 说明面板改成单栏可滚动，关键信息上色")
+	t.append("· 利息现在直接写「这一波结束能进账多少」")
+	t.append("")
+	t.append("[color=#%s]v1.0[/color]" % gold)
+	t.append("· 完整的一局：10 波、火木水克制三角、波间三选一")
+	t.append("· 塔可练级，同属性凑满 3 座解锁全屏技能")
+	t.append("· 奖励分 S / A / B / C 稀有度，可刷新")
+	t.append("· 像素风表现层，打击感、技能特效、击杀粒子")
+	return "\n".join(t)
+
 func _on_help() -> void:
 	if help_layer.visible:
 		_close_help()
@@ -1418,15 +1567,15 @@ func _position_ui() -> void:
 	ui.size = Vector2(vw, vh)
 
 	lbl_wave.position = Vector2(16, 6)
-	lbl_wave.size = Vector2(150, 28)
+	lbl_wave.size = Vector2(210, 28)
 	# 有图标的时候文字往右让 26px，图标画在 _draw 里
 	var icon_pad: float = 26.0 if tex_gold != null else 0.0
 	# 图标画在 y 7..27（中心 17），数字得跟它对齐 ——
 	# Label 默认顶对齐，不设 CENTER 的话数字会比图标低一截。
-	lbl_gold.position = Vector2(166 + icon_pad, 5)
+	lbl_gold.position = Vector2(216 + icon_pad, 5)
 	lbl_gold.size = Vector2(120, 24)
 	lbl_gold.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	lbl_lives.position = Vector2(324 + icon_pad, 5)
+	lbl_lives.position = Vector2(374 + icon_pad, 5)
 	lbl_lives.size = Vector2(120, 24)
 	lbl_lives.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	lbl_preview.position = Vector2(16, 46)
@@ -1457,6 +1606,7 @@ func _position_ui() -> void:
 
 	_place_panel(buff_layer, buff_box, buff_title, buff_body, 560.0, 430.0)
 	_place_panel(help_layer, help_box, help_title, help_body, 640.0, 9999.0)
+	_place_panel(log_layer, log_box, log_title, log_body, 620.0, 9999.0)
 
 	title_layer.size = Vector2(vw, vh)
 	var tdim: ColorRect = title_layer.get_node_or_null("Dim")
@@ -1467,11 +1617,29 @@ func _position_ui() -> void:
 	title_name.size = Vector2(vw, 60)
 	title_sub.position = Vector2(0, vh * 0.22 + 68.0)
 	title_sub.size = Vector2(vw, 24)
-	for i: int in 3:
+
+	# 难度按钮一排
+	var dw: float = 96.0
+	var dgap: float = 12.0
+	var dtotal: float = dw * 3.0 + dgap * 2.0
+	var dy: float = vh * 0.40
+	var di: int = 0
+	for d: Balance.Difficulty in [Balance.Difficulty.EASY,
+			Balance.Difficulty.HARD, Balance.Difficulty.HELL]:
+		var db: Button = diff_buttons.get(d, null)
+		if db != null:
+			db.position = Vector2((vw - dtotal) * 0.5 + float(di) * (dw + dgap), dy)
+			db.size = Vector2(dw, 40)
+		di += 1
+	if title_diff_hint != null:
+		title_diff_hint.position = Vector2(0, dy + 46.0)
+		title_diff_hint.size = Vector2(vw, 20)
+
+	for i: int in 4:
 		var b: Button = title_layer.get_node_or_null("T%d" % i)
 		if b != null:
-			b.position = Vector2(vw * 0.5 - 90.0, vh * 0.48 + float(i) * 58.0)
-			b.size = Vector2(180, 46)
+			b.position = Vector2(vw * 0.5 - 90.0, vh * 0.54 + float(i) * 48.0)
+			b.size = Vector2(180, 40)
 
 	reward_layer.size = Vector2(vw, vh)
 	reward_dim.position = Vector2.ZERO
@@ -1555,8 +1723,9 @@ func _refresh_hud() -> void:
 	var shown_lives: int = run.lives
 	if run.battle != null:
 		shown_lives -= run.battle.lives_lost
-	lbl_wave.text = "第 %d / %d 波" % [
-		mini(run.wave_index, Balance.TOTAL_WAVES), Balance.TOTAL_WAVES]
+	lbl_wave.text = "第 %d / %d 波　%s" % [
+		mini(run.wave_index, Balance.TOTAL_WAVES), Balance.TOTAL_WAVES,
+		Balance.difficulty_name()]
 	lbl_gold.text = str(run.gold) if tex_gold != null else "金 %d" % run.gold
 	lbl_lives.text = str(maxi(shown_lives, 0)) if tex_life != null \
 		else "命 %d" % maxi(shown_lives, 0)
@@ -1738,7 +1907,7 @@ func _show_rewards() -> void:
 
 func _show_over() -> void:
 	over_layer.visible = true
-	over_title.text = "通　关" if run.won else "失　败"
+	over_title.text = ("通　关" if run.won else "失　败") + "　·　" + Balance.difficulty_name()
 	over_title.add_theme_color_override("font_color",
 		Palette.OK if run.won else Palette.LIFE)
 	var line: String = "剩余生命 %d" % run.lives if run.won \

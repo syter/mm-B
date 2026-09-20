@@ -24,6 +24,8 @@ func _initialize() -> void:
 	_test_reroll_cost()
 	_test_interest_preview()
 	_test_element_traits()
+	_test_elite_skills()
+	_test_boss()
 	_test_new_rewards()
 	_test_wave_determinism()
 	_test_battle_leaks()
@@ -50,9 +52,22 @@ func _test_multiplier() -> void:
 	_feq(Types.base_multiplier(w, f), Balance.MULT_COUNTERED, "木打火＝被克")
 	_feq(Types.base_multiplier(f, f), Balance.MULT_SAME, "同属性")
 	_feq(Types.base_multiplier(Types.Element.NONE, f), Balance.MULT_NEUTRAL_ATK, "无属性打有属性")
-	# HP_GROWTH 是冻结值。它太灵敏（0.06 能把通关率从 85% 打到 33%），
-	# 定死之后调难度一律走别的参数。改了这个数就会红。
-	_feq(Balance.HP_GROWTH, 1.5, "HP_GROWTH 是冻结值 1.5，调难度请用别的参数")
+	# HP_GROWTH 由难度档位决定，不该在代码里手改。
+	# 它太灵敏（0.06 能把通关率从 85% 打到 33%），正因如此才适合做档位。
+	_feq(Balance.HP_GROWTH, 1.5, "默认（简单）是 1.5")
+	var prev: float = 0.0
+	for d: Balance.Difficulty in [Balance.Difficulty.EASY,
+			Balance.Difficulty.HARD, Balance.Difficulty.HELL]:
+		Balance.apply_difficulty(d)
+		_true(Balance.HP_GROWTH > prev, "%s 比上一档更难（%.2f）" % [
+			Balance.difficulty_name(), Balance.HP_GROWTH])
+		_eq(Balance.difficulty, d, "当前难度记录正确")
+		prev = Balance.HP_GROWTH
+	_feq(Balance.DIFFICULTY_HP_GROWTH[Balance.Difficulty.EASY], 1.5, "简单 1.5")
+	_feq(Balance.DIFFICULTY_HP_GROWTH[Balance.Difficulty.HARD], 1.55, "困难 1.55")
+	_feq(Balance.DIFFICULTY_HP_GROWTH[Balance.Difficulty.HELL], 1.6, "地狱 1.6")
+	Balance.reset()
+	_eq(Balance.difficulty, Balance.Difficulty.EASY, "reset 回到简单档")
 	# 核心假设：打对属性至少要比打错强 5 倍，否则玩家不会在意克制
 	var ratio: float = Balance.MULT_COUNTER / Balance.MULT_COUNTERED
 	_true(ratio >= 5.0, "克制/被克 倍率差 >= 5x（实际 %.1fx）" % ratio)
@@ -396,6 +411,151 @@ func _test_element_traits() -> void:
 	victim2.take_damage(999.0)
 	b._on_killed(victim2)
 	_feq(ally.hp, ally.max_hp, "回血不会超过血量上限")
+
+## 精英技能：出场放一次，之后每过一个触发点再放一次，次数由难度决定
+func _test_elite_skills() -> void:
+	for d: Balance.Difficulty in [Balance.Difficulty.EASY,
+			Balance.Difficulty.HARD, Balance.Difficulty.HELL]:
+		Balance.reset()
+		Balance.apply_difficulty(d)
+		var rs: RunState = RunState.new(61)
+		rs.gold = 999999
+		rs.lives = 99999
+		for i: int in Balance.MAX_TOWERS:
+			var t: Tower = rs.build_tower()
+			rs.upgrade_tower(t.slot, Types.ELEMENTAL[i % 3])
+		while rs.wave_index < Balance.ELITE_WAVES[0]:
+			rs.play_wave()
+		rs.begin_wave()
+		var casts: int = 0
+		while not rs.battle.is_finished():
+			rs.step_battle(Balance.SIM_STEP)
+			casts += rs.battle.last_elite_casts.size()
+		_eq(casts, Balance.elite_casts(),
+			"%s 难度精英放 %d 次技能" % [Balance.difficulty_name(), Balance.elite_casts()])
+	Balance.reset()
+	_true(Balance.ELITE_CASTS_BY_DIFFICULTY[Balance.Difficulty.HELL]
+		> Balance.ELITE_CASTS_BY_DIFFICULTY[Balance.Difficulty.EASY],
+		"地狱放得比简单多")
+
+	# 三种技能各自要真的改变战场
+	var b: Battle = _fresh_battle()
+	var mob: Enemy = Enemy.new(Types.Element.FIRE, 100.0, 1.0, 5, false)
+	b.active.append(mob)
+	var fire_elite: Enemy = Enemy.new(Types.Element.FIRE, 999.0, 1.0, 5, true)
+	var before_speed: float = mob.speed()
+	b._cast_elite_skill(fire_elite)
+	_true(mob.speed() > before_speed, "火·浴火让杂兵跑得更快")
+
+	# 木·分裂：死亡时裂成两只半血的，而且只裂一次
+	var b2: Battle = _fresh_battle()
+	var mob2: Enemy = Enemy.new(Types.Element.WOOD, 100.0, 1.0, 20, false)
+	b2.active.append(mob2)
+	_false(mob2.split_on_death, "一开始没有分裂标记")
+	b2._cast_elite_skill(Enemy.new(Types.Element.WOOD, 999.0, 1.0, 5, true))
+	_true(mob2.split_on_death, "木精英给杂兵挂上分裂")
+	# 重复挂不会叠加（就是个布尔）
+	b2._cast_elite_skill(Enemy.new(Types.Element.WOOD, 999.0, 1.0, 5, true))
+	_true(mob2.split_on_death, "重复挂还是一个标记")
+	mob2.take_damage(999.0)
+	b2._on_killed(mob2)
+	var children: Array[Enemy] = []
+	for o: Enemy in b2.active:
+		if o != mob2:
+			children.append(o)
+	_eq(children.size(), Balance.ELITE_WOOD_SPLIT_COUNT,
+		"裂成 %d 只" % Balance.ELITE_WOOD_SPLIT_COUNT)
+	for c: Enemy in children:
+		_feq(c.max_hp, 100.0 * Balance.ELITE_WOOD_SPLIT_HP, "分裂出来的只有一半血")
+		_false(c.split_on_death, "分裂出来的不再带标记 —— 只裂一次，不会指数爆炸")
+		_true(c.bounty < mob2.bounty, "分裂体赏金减半，防止故意刷钱")
+	# 再杀一次分裂体，不该继续裂
+	var before_count: int = b2.active.size()
+	children[0].take_damage(999.0)
+	b2._on_killed(children[0])
+	_eq(b2.active.size(), before_count, "分裂体死了不会再裂")
+
+	# 水·潮涌：全场回满
+	var b3: Battle = _fresh_battle()
+	var mob3: Enemy = Enemy.new(Types.Element.WATER, 100.0, 1.0, 5, false)
+	mob3.hp = 12.0
+	b3.active.append(mob3)
+	b3._cast_elite_skill(Enemy.new(Types.Element.WATER, 999.0, 1.0, 5, true))
+	_feq(mob3.hp, mob3.max_hp, "水·潮涌把杂兵血量回满")
+
+	# 精英自己不该被自己的技能影响
+	var e2: Enemy = Enemy.new(Types.Element.FIRE, 999.0, 1.0, 5, true)
+	b.active.append(e2)
+	var espeed: float = e2.speed()
+	b._cast_elite_skill(Enemy.new(Types.Element.FIRE, 999.0, 1.0, 5, true))
+	_feq(e2.speed(), espeed, "精英不吃自己人的 buff")
+
+func _fresh_battle() -> Battle:
+	var rs: RunState = RunState.new(62)
+	rs.begin_wave()
+	var b: Battle = rs.battle
+	b.active.clear()
+	return b
+
+## 大 BOSS：属性轮换 + 召唤护卫 + 死亡分裂成三只精英。
+## 这里盯得最紧的是「boss 旗标有没有真的传到战场上」——
+## 丢了的话 boss 会静默退化成一只厚精英，不报错、不崩溃，只是三个机制全不生效。
+func _test_boss() -> void:
+	Balance.reset()
+	var rs: RunState = RunState.new(71)
+	rs.wave_index = Balance.BOSS_WAVE
+	rs.begin_wave()
+	var b: Battle = rs.battle
+	# 推进到 boss 出场
+	var guard: int = 0
+	var boss: Enemy = null
+	while boss == null and guard < 4000:
+		b.step(Balance.SIM_STEP)
+		guard += 1
+		for e: Enemy in b.active:
+			if e.is_boss:
+				boss = e
+				break
+	_true(boss != null, "大BOSS 真的出现在战场上（旗标没在生成时丢掉）")
+	if boss == null:
+		return
+	_true(boss.is_elite, "boss 同时也算精英")
+	_true(boss.max_hp > 0.0, "boss 有血量")
+
+	# 属性轮换：掉血到阈值就换属性
+	var e0: Types.Element = boss.element
+	boss.hp = boss.max_hp * 0.5   # 跨过第一个阈值
+	b._boss_phases()
+	_neq(boss.element, e0, "血量过半后 boss 换了属性")
+	_eq(boss.phase, 1, "进入第 2 阶段")
+	var e1: Types.Element = boss.element
+	boss.hp = boss.max_hp * 0.2   # 跨过第二个阈值
+	b._boss_phases()
+	_neq(boss.element, e1, "血量掉到三分之一又换一次")
+	_eq(boss.phase, 2, "进入第 3 阶段")
+	b._boss_phases()
+	_eq(boss.phase, 2, "阈值用完就不再换了")
+
+	# 召唤护卫
+	var before: int = b.active.size()
+	b._cast_elite_skill(boss)
+	_eq(b.active.size(), before + Balance.BOSS_SUMMON_COUNT,
+		"boss 每次放技能召唤 %d 只护卫" % Balance.BOSS_SUMMON_COUNT)
+
+	# 死亡分裂成三只精英，每种属性各一只
+	var before2: int = b.active.size()
+	boss.take_damage(boss.max_hp * 10.0)
+	b._on_killed(boss)
+	_eq(b.active.size(), before2 + 3, "boss 死时裂成 3 只")
+	var found: Array[int] = []
+	for e: Enemy in b.active:
+		if e.is_elite and not e.is_boss and not found.has(int(e.element)):
+			found.append(int(e.element))
+	_eq(found.size(), 3, "三只精英是火木水各一")
+	for e: Enemy in b.active:
+		if e.is_elite and not e.is_boss:
+			_false(e.is_boss, "分裂出的是精英不是 boss —— 不会无限套娃")
+			_true(e.cast_index >= 0, "施法进度已对齐当前位置，不会一帧连放")
 
 ## 后加的那批奖励，每个都要真的起作用
 func _test_new_rewards() -> void:

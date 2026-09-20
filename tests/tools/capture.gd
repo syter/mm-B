@@ -48,6 +48,16 @@ func _process(_delta: float) -> bool:
 	if not done.has("title"):
 		pending = "title"
 		return false
+	# 更新日志（标题页上的面板）
+	if not done.has("changelog"):
+		if game.log_layer.visible:
+			pending = "changelog"
+		else:
+			game._on_log()
+		return false
+	if game.log_layer.visible:
+		game._close_log()
+		return false
 	if game.phase == 4:
 		game._start_game()
 		return false
@@ -166,7 +176,7 @@ func _process(_delta: float) -> bool:
 			return false
 		return false
 
-	if done.size() >= 12:
+	if done.size() >= 13:
 		print("\n截图目录：%s" % ProjectSettings.globalize_path(OUT_DIR))
 		return true
 	return false

@@ -23,6 +23,16 @@ var root_time: float = 0.0      ## 木：缠绕，完全定身
 var skill_slow_time: float = 0.0
 var skill_slow_pct: float = 0.0
 
+## 精英技能：被「浴火」加速
+var haste_time: float = 0.0
+var haste_pct: float = 0.0
+## 精英自己用：已经放到第几个触发点了
+var cast_index: int = 0
+## 木精英挂的「死亡时分裂」。分出来的小怪不带这个标记，所以只会分裂一次。
+var split_on_death: bool = false
+## BOSS 专用：已经切换到第几个阶段
+var phase: int = 0
+
 ## 是否被定身
 func is_rooted() -> bool:
 	return root_time > 0.0
@@ -38,7 +48,7 @@ func _init(element_: Types.Element, hp_: float, speed_: float, bounty_: int,
 	is_boss = boss
 
 func speed() -> float:
-	return base_speed
+	return base_speed * (1.0 + (haste_pct if haste_time > 0.0 else 0.0))
 
 func leak_cost() -> int:
 	if is_boss:

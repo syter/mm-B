@@ -25,6 +25,12 @@ var last_ticks: Array[Dictionary] = []
 var last_skill: Dictionary = {}
 ## 本 step 内发生的「水怪死亡全场回血」，给表现层飘字用
 var last_heals: Array[Dictionary] = []
+## 本 step 内精英放的技能，给表现层做特效：{element, dist, name}
+var last_elite_casts: Array[Dictionary] = []
+## 本 step 内新冒出来的怪（分裂、召唤），给表现层做出场特效
+var last_spawns: Array[Dictionary] = []
+## BOSS 换属性的时刻，给表现层做提示：{element, dist}
+var last_boss_phases: Array[Dictionary] = []
 ## 「连杀」用：本波连续击杀数，漏一只就清零
 var kill_streak: int = 0
 ## 裂变递归保护：裂变溅射不再触发裂变，否则一次击杀能连锁清场
@@ -48,8 +54,13 @@ func step(dt: float) -> void:
 	last_shots.clear()
 	last_ticks.clear()
 	last_heals.clear()
+	last_elite_casts.clear()
+	last_spawns.clear()
+	last_boss_phases.clear()
 	time += dt
 	_spawn()
+	_boss_phases()
+	_elite_casts()
 	_advance(dt)
 	_fire(dt)
 	_cleanup()
@@ -72,8 +83,87 @@ func run_to_end() -> Dictionary:
 func _spawn() -> void:
 	while _next_spawn < _specs.size() and float(_specs[_next_spawn]["time"]) <= time:
 		var s: Dictionary = _specs[_next_spawn]
-		active.append(Enemy.new(s["element"], s["hp"], s["speed"], s["bounty"], s["elite"]))
+		active.append(Enemy.new(s["element"], s["hp"], s["speed"], s["bounty"],
+			bool(s.get("elite", false)), bool(s.get("boss", false))))
 		_next_spawn += 1
+
+## BOSS 的属性轮换：血量每掉一段就换一种属性（火→木→水→火）。
+## 这一条直接把整局的核心决策推到极限 —— 它会挨个检验你三种塔都够不够强，
+## 而不是只看最强的那一种。
+func _boss_phases() -> void:
+	for e: Enemy in active:
+		if not e.alive or not e.is_boss:
+			continue
+		var frac: float = e.hp / maxf(e.max_hp, 0.001)
+		while e.phase < Balance.BOSS_PHASE_THRESHOLDS.size() \
+				and frac <= float(Balance.BOSS_PHASE_THRESHOLDS[e.phase]):
+			e.phase += 1
+			e.element = Types.COUNTERS[e.element]  # 火→木→水→火
+			last_boss_phases.append({"element": int(e.element), "dist": e.distance})
+
+## 把一只中途出场的怪的施法进度对齐到它当前的位置 ——
+## 不然它会在同一帧把之前所有触发点的技能一口气全放了。
+func _align_casts(e: Enemy) -> void:
+	var passed: int = 0
+	var progress: float = e.distance / Balance.TRACK_LENGTH
+	for pt: float in Balance.ELITE_CAST_POINTS:
+		if progress >= pt:
+			passed += 1
+	e.cast_index = passed
+
+## 精英一出场就放一次技能，之后每过一个触发点再放一次。
+## 放几次由难度决定（简单 1 次 / 困难 3 次 / 地狱 5 次）。
+func _elite_casts() -> void:
+	var limit: int = Balance.elite_casts()
+	for e: Enemy in active:
+		if not e.alive or not e.is_elite:
+			continue
+		var progress: float = e.distance / Balance.TRACK_LENGTH
+		while e.cast_index < limit \
+				and e.cast_index < Balance.ELITE_CAST_POINTS.size() \
+				and progress >= float(Balance.ELITE_CAST_POINTS[e.cast_index]):
+			e.cast_index += 1
+			_cast_elite_skill(e)
+
+## 精英技能按属性分。三种各自强化本属性的性格 ——
+## 火本来就快，就让全场更快；木本来就厚，就让全场更厚；
+## 水的威胁是拖时间，就直接把怪往前推，偷走你的输出窗口。
+func _cast_elite_skill(src: Enemy) -> void:
+	var name: String = ""
+	match src.element:
+		Types.Element.FIRE:
+			name = "浴火"
+			for o: Enemy in active:
+				if o.alive and not o.is_elite:
+					o.haste_pct = Balance.ELITE_FIRE_SPEED_PCT
+					o.haste_time = Balance.ELITE_FIRE_DURATION
+		Types.Element.WOOD:
+			name = "分裂"
+			# 布尔标记，重复挂也不会叠加；分出来的小怪不带标记，只会分裂一次
+			for o: Enemy in active:
+				if o.alive and not o.is_elite:
+					o.split_on_death = true
+		Types.Element.WATER:
+			name = "潮涌"
+			for o: Enemy in active:
+				if o.alive and not o.is_elite:
+					o.hp = o.max_hp
+	# BOSS 不放属性技能，它召唤护卫 —— 分散你的火力比单纯变强更难处理
+	if src.is_boss:
+		name = "召唤"
+		for i: int in Balance.BOSS_SUMMON_COUNT:
+			var g: Enemy = Enemy.new(src.element,
+				src.max_hp * Balance.BOSS_SUMMON_HP,
+				src.base_speed / maxf(Balance.BOSS_SPEED_MULT, 0.01),
+				roundi(src.bounty * Balance.BOSS_SUMMON_BOUNTY), false, false)
+			g.distance = clampf(src.distance - 0.5 - 0.5 * float(i),
+				0.0, Balance.TRACK_LENGTH - 0.01)
+			active.append(g)
+			last_spawns.append({"dist": g.distance, "element": int(g.element)})
+	last_elite_casts.append({
+		"element": int(src.element), "dist": src.distance, "name": name,
+		"boss": src.is_boss,
+	})
 
 func _advance(dt: float) -> void:
 	for e: Enemy in active:
@@ -82,6 +172,8 @@ func _advance(dt: float) -> void:
 		_burn(e, dt)
 		if not e.alive:
 			continue
+		if e.haste_time > 0.0:
+			e.haste_time -= dt
 		var sp: float = e.speed()
 		# 缠绕优先：定身期间完全不动
 		if e.root_time > 0.0:
@@ -228,7 +320,8 @@ func _on_killed(e: Enemy) -> void:
 	killed += 1
 	kill_streak += 1
 	gold_earned += _bounty_of(e)
-	_fission(e)
+	# 水属性怪死亡时给全场回血 —— 这是「属性自带特性」的一部分，
+	# 放在统一的死亡处理里，不管被什么打死都会触发。
 	if e.element == Types.Element.WATER and Balance.WATER_DEATH_HEAL > 0.0:
 		var amount: float = e.max_hp * Balance.WATER_DEATH_HEAL
 		var healed: int = 0
@@ -238,6 +331,45 @@ func _on_killed(e: Enemy) -> void:
 				healed += 1
 		if healed > 0:
 			last_heals.append({"dist": e.distance, "amount": roundi(amount), "count": healed})
+	_split(e)
+	_boss_death(e)
+	_fission(e)
+
+## BOSS 死时裂成三只精英（火木水各一）。
+## 真正的考验在这之后 —— 别把技能和资源在本体身上一次打光。
+func _boss_death(src: Enemy) -> void:
+	if not src.is_boss:
+		return
+	for el: Types.Element in Types.ELEMENTAL:
+		var e2: Enemy = Enemy.new(el,
+			src.max_hp * Balance.BOSS_DEATH_ELITE_HP,
+			src.base_speed / maxf(Balance.BOSS_SPEED_MULT, 0.01)
+				* Balance.ELITE_SPEED_MULT,
+			roundi(src.bounty * Balance.BOSS_DEATH_ELITE_BOUNTY), true, false)
+		e2.distance = clampf(src.distance - 0.6 + 0.6 * float(int(el)),
+			0.0, Balance.TRACK_LENGTH - 0.01)
+		_align_casts(e2)
+		active.append(e2)
+		last_spawns.append({"dist": e2.distance, "element": int(el)})
+
+## 木精英的「死亡分裂」。分出来的小怪血量减半、赏金减半，
+## 而且**不带分裂标记** —— 只分裂一次，否则会指数爆炸。
+func _split(src: Enemy) -> void:
+	if not src.split_on_death:
+		return
+	src.split_on_death = false
+	for i: int in Balance.ELITE_WOOD_SPLIT_COUNT:
+		var child: Enemy = Enemy.new(
+			src.element,
+			src.max_hp * Balance.ELITE_WOOD_SPLIT_HP,
+			src.base_speed,
+			roundi(float(src.bounty) * Balance.ELITE_WOOD_SPLIT_BOUNTY),
+			false, false)
+		# 稍微错开位置，不然两只完全重叠看不出分裂了
+		child.distance = clampf(src.distance - 0.35 + 0.7 * float(i),
+			0.0, Balance.TRACK_LENGTH - 0.01)
+		active.append(child)
+		last_spawns.append({"dist": child.distance, "element": int(child.element)})
 
 ## 赏金。「连杀」会让本波连续击杀的赏金逐只递增，漏一只清零。
 func _bounty_of(e: Enemy) -> int:

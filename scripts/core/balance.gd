@@ -6,9 +6,9 @@ extends RefCounted
 
 # ---- 属性克制倍率 ----------------------------------------------------------
 ## 火 → 木 → 水 → 火
-static var MULT_COUNTER: float = 2.6      ## 克制
+static var MULT_COUNTER: float = 3.0      ## 克制
 static var MULT_SAME: float = 0.55        ## 同属性
-static var MULT_COUNTERED: float = 0.3    ## 被克制
+static var MULT_COUNTERED: float = 0.25   ## 被克制
 static var MULT_NEUTRAL_ATK: float = 0.30 ## 无属性塔打有属性怪。压到 0.30 是为了堵死「只堆无属性塔」的歪路，
 ## 模拟实测 0.45 时该打法通关率 20%，0.30 时降到 0%。
 
@@ -53,6 +53,9 @@ static var SKILL_COOLDOWN: float = 18.0
 ## 技能伤害 = 这个 × 该属性所有塔的等级总和，再乘属性克制倍率。
 ## 挂钩等级总和而不是塔数，这样「练精一种属性」才有回报。
 static var SKILL_DAMAGE_PER_LEVEL: float = 26.0
+## 奖励强度的全局倍率。24 张卡一张张调太慢，用一个系数统一放大 ——
+## 模拟器能直接扫它，找到目标通关率之后再决定要不要固化进各张卡。
+static var REWARD_POWER: float = 1.0
 ## 火：灼烧。总伤害是技能伤害的这个比例，分摊在持续时间内每 0.2 秒跳一次
 static var SKILL_BURN_RATIO: float = 0.6
 static var SKILL_BURN_DURATION: float = 3.0
@@ -90,11 +93,11 @@ static var ENEMY_BASE_SPEED: float = 1.7  ## 单位/秒 → 约 14 秒走完
 static var SPEED_GROWTH: float = 0.02     ## 每波累加
 
 static var HP_BASE: float = 55.0
-## ⚠️ 冻结值，不要再改。
-## 这条是难度的主力旋钮，但也太灵敏了 —— 0.06 的差距能把通关率从 85% 打到 33%，
-## 根本没法微调。定在 1.5 之后就当它是常量，以后调难度一律用别的参数
-## （COUNT_PER_WAVE / TOWER_BASE_DAMAGE / TRACK_LENGTH / 经济）。
-## 回归测试里有一条断言盯着这个值。
+## ⚠️ 不要在代码里手改这个值 —— 它由难度档位决定，见 apply_difficulty()。
+##
+## 这条太灵敏了：0.06 的差距能把通关率从 85% 打到 33%，根本没法当微调旋钮用。
+## 正因为灵敏，它反而特别适合做「档位」—— 三个档之间的体感差距足够明显。
+## 想微调难度请用别的参数（COUNT_PER_WAVE / TOWER_BASE_DAMAGE / TRACK_LENGTH / 经济）。
 static var HP_GROWTH: float = 1.5
 static var COUNT_BASE: int = 6
 ## 第 n 波数量 = COUNT_BASE + n * COUNT_PER_WAVE。
@@ -116,7 +119,7 @@ static var ELITE_SPEED_MULT: float = 0.65
 
 ## 大 boss 固定压轴在最后一波。比精英厚得多、慢得多，漏了基本等于输。
 static var BOSS_WAVE: int = 10
-static var BOSS_HP_MULT: float = 20.0
+static var BOSS_HP_MULT: float = 14.0
 static var BOSS_BOUNTY_MULT: float = 12.0
 static var BOSS_SPEED_MULT: float = 0.5
 
@@ -149,6 +152,82 @@ static var REROLL_BASE_COST: int = 20
 static var REROLL_COST_GROWTH: float = 2.1
 static var REROLL_WAVE_SCALE: float = 0.1
 
+# ---- 难度档位 --------------------------------------------------------------
+## 三个档只动 HP_GROWTH 一个参数。它太灵敏，不适合微调，
+## 但正因为灵敏，拿来做档位反而干净 —— 一个参数就能拉开明显的体感差距，
+## 而且不会牵连经济、塔价这些玩家已经熟悉的数字。
+enum Difficulty { EASY, HARD, HELL }
+
+const DIFFICULTY_HP_GROWTH: Dictionary = {
+	Difficulty.EASY: 1.5,
+	Difficulty.HARD: 1.55,
+	Difficulty.HELL: 1.6,
+}
+
+const DIFFICULTY_NAMES: Dictionary = {
+	Difficulty.EASY: "简单",
+	Difficulty.HARD: "困难",
+	Difficulty.HELL: "地狱",
+}
+
+static var difficulty: Difficulty = Difficulty.EASY
+
+static func apply_difficulty(d: Difficulty) -> void:
+	difficulty = d
+	HP_GROWTH = DIFFICULTY_HP_GROWTH[d]
+
+static func difficulty_name() -> String:
+	return DIFFICULTY_NAMES[difficulty]
+
+# ---- 精英技能 --------------------------------------------------------------
+## 精英一出场就放一次，之后每走完一段路再放一次。
+##
+## 「转弯」这个概念在规则层是不存在的（赛道形状属于表现层），所以触发点用
+## **赛道进度的百分比**来定 —— 改赛道形状也不会坏，模拟器也算得出来。
+## 这几个数对应蛇行赛道上出场 + 四个拐弯的大致位置。
+static var ELITE_CAST_POINTS: Array[float] = [0.0, 0.22, 0.44, 0.66, 0.85]
+
+## 各难度实际会放几次（从上面的列表里取前 N 个）
+## 原本是 1/3/5，但实测困难只有 3%、地狱 0/200 局 —— 不是难，是数学上不可能。
+## 精英技能的压力不是线性叠加：一局有 4 场精英，5 次就是一局承受 20 次，
+## 而「潮涌」是回满血，一次就把之前所有输出清零。
+static var ELITE_CASTS_BY_DIFFICULTY: Dictionary = {
+	Difficulty.EASY: 1,
+	Difficulty.HARD: 2,
+	Difficulty.HELL: 3,
+}
+
+## 火 · 浴火：全场杂兵加速，持续一段时间。火本来就快，这一下更难拦。
+static var ELITE_FIRE_SPEED_PCT: float = 0.45
+static var ELITE_FIRE_DURATION: float = 7.0
+## 木 · 分裂：给全场杂兵挂上「死亡时分裂」。
+## 只分裂一次 —— 分出来的小怪不再带这个效果，否则会指数爆炸。
+## 已经带效果的怪再被挂一次也不会叠加（就是个布尔标记）。
+static var ELITE_WOOD_SPLIT_COUNT: int = 2
+static var ELITE_WOOD_SPLIT_HP: float = 0.5
+## 分裂出来的小怪赏金也减半，不然「故意让它分裂」会变成刷钱套路
+static var ELITE_WOOD_SPLIT_BOUNTY: float = 0.5
+# ---- 大 BOSS ---------------------------------------------------------------
+## 三段设计，每一段逼你用不同的方式打：
+##   属性轮换 —— 血量每掉一段就换一种属性，逐个检验你三种塔够不够强，
+##               而不是只看最强的那一种
+##   召唤护卫 —— 每个触发点召一批当前属性的小怪，分散你的火力
+##   死亡分裂 —— 死时裂成三只精英（火木水各一），别把资源在本体身上一次打光
+static var BOSS_PHASE_THRESHOLDS: Array[float] = [0.66, 0.33]
+static var BOSS_SUMMON_COUNT: int = 3
+## 召唤出来的小怪血量，按 boss 最大血量的比例算
+static var BOSS_SUMMON_HP: float = 0.04
+static var BOSS_SUMMON_BOUNTY: float = 0.06
+## 死亡分裂出的三只精英，每只的血量（按 boss 最大血量的比例）
+static var BOSS_DEATH_ELITE_HP: float = 0.10
+static var BOSS_DEATH_ELITE_BOUNTY: float = 0.12
+
+## 水 · 潮涌：全场杂兵血量回满。水的威胁就是拖时间，这一下直接把你的输出清零。
+static var ELITE_WATER_HEAL_FULL: bool = true
+
+static func elite_casts() -> int:
+	return int(ELITE_CASTS_BY_DIFFICULTY.get(difficulty, 1))
+
 # ---- 模拟 ------------------------------------------------------------------
 static var SIM_STEP: float = 0.05         ## 无头模拟步长（20Hz）
 
@@ -166,9 +245,9 @@ static func round_cost(v: float) -> int:
 	return maxi(10, roundi(v / 10.0) * 10)
 
 static func reset() -> void:
-	MULT_COUNTER = 2.6
+	MULT_COUNTER = 3.0
 	MULT_SAME = 0.55
-	MULT_COUNTERED = 0.3
+	MULT_COUNTERED = 0.25
 	MULT_NEUTRAL_ATK = 0.30
 	START_GOLD = 220
 	START_LIVES = 20
@@ -179,6 +258,7 @@ static func reset() -> void:
 	SKILL_REQUIRED_TOWERS = 3
 	SKILL_COOLDOWN = 18.0
 	SKILL_DAMAGE_PER_LEVEL = 26.0
+	REWARD_POWER = 1.0
 	SKILL_BURN_RATIO = 0.6
 	SKILL_BURN_DURATION = 3.0
 	SKILL_SLOW_PCT = 0.5
@@ -190,7 +270,24 @@ static func reset() -> void:
 	TRACK_LENGTH = 24.0
 	ENEMY_BASE_SPEED = 1.7
 	HP_BASE = 55.0
-	HP_GROWTH = 1.5
+	difficulty = Difficulty.EASY
+	HP_GROWTH = DIFFICULTY_HP_GROWTH[Difficulty.EASY]
+	ELITE_CAST_POINTS = [0.0, 0.22, 0.44, 0.66, 0.85]
+	ELITE_CASTS_BY_DIFFICULTY = {
+		Difficulty.EASY: 1, Difficulty.HARD: 2, Difficulty.HELL: 3,
+	}
+	ELITE_FIRE_SPEED_PCT = 0.45
+	ELITE_FIRE_DURATION = 7.0
+	ELITE_WOOD_SPLIT_COUNT = 2
+	ELITE_WOOD_SPLIT_HP = 0.5
+	ELITE_WOOD_SPLIT_BOUNTY = 0.5
+	ELITE_WATER_HEAL_FULL = true
+	BOSS_PHASE_THRESHOLDS = [0.66, 0.33]
+	BOSS_SUMMON_COUNT = 3
+	BOSS_SUMMON_HP = 0.04
+	BOSS_SUMMON_BOUNTY = 0.06
+	BOSS_DEATH_ELITE_HP = 0.10
+	BOSS_DEATH_ELITE_BOUNTY = 0.12
 	COUNT_BASE = 6
 	COUNT_PER_WAVE = 1.6
 	SPAWN_INTERVAL = 0.75

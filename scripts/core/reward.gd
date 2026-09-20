@@ -102,34 +102,34 @@ static func _build() -> void:
 	_pool = [
 		# ---- C：基础数值，稳定但不惊艳，用来垫底 ----
 		Reward.new("damage", Rarity.C, "淬火", "全体塔伤害 +12%",
-			func(rs) -> void: rs.mods.damage_pct += 0.12,
+			func(rs) -> void: rs.mods.damage_pct += 0.12 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 +%d%%" % roundi(rs.mods.damage_pct * 100.0)),
 		Reward.new("rate", Rarity.C, "急速", "全体塔攻速 +10%",
-			func(rs) -> void: rs.mods.rate_pct += 0.10,
+			func(rs) -> void: rs.mods.rate_pct += 0.10 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 +%d%%" % roundi(rs.mods.rate_pct * 100.0)),
 		Reward.new("life", Rarity.C, "修补", "生命 +3",
 			func(rs) -> void: rs.lives += 3,
 			func(rs) -> String: return "目前 %d 命" % rs.lives),
 		Reward.new("gold", Rarity.C, "赏金", "立刻获得金钱（随波次成长）",
-			func(rs) -> void: rs.gold += 60 + 20 * rs.wave_index,
+			func(rs) -> void: rs.gold += roundi(float(60 + 20 * rs.wave_index) * Balance.REWARD_POWER),
 			func(rs) -> String: return "这次给 %d 金" % (60 + 20 * rs.wave_index)),
 
 		# ---- B：有针对性，能撑起特定打法 ----
 		Reward.new("true", Rarity.B, "贯穿之刃", "每次命中附加 6 点无视属性伤害",
-			func(rs) -> void: rs.mods.true_damage += 6.0,
+			func(rs) -> void: rs.mods.true_damage += 6.0 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 +%d" % roundi(rs.mods.true_damage)),
 		Reward.new("relief", Rarity.B, "韧性", "被克制时的伤害惩罚减轻 +0.10",
-			func(rs) -> void: rs.mods.countered_relief += 0.10,
+			func(rs) -> void: rs.mods.countered_relief += 0.10 * Balance.REWARD_POWER,
 			func(rs) -> String: return _cap(
 				Balance.MULT_COUNTERED + rs.mods.effective_relief(),
 				Modifiers.CAP_COUNTERED, "%.2f")),
 		Reward.new("neutral", Rarity.B, "本源", "无属性塔打有属性怪 +0.12",
-			func(rs) -> void: rs.mods.neutral_boost += 0.12,
+			func(rs) -> void: rs.mods.neutral_boost += 0.12 * Balance.REWARD_POWER,
 			func(rs) -> String: return _cap(
 				Balance.MULT_NEUTRAL_ATK + rs.mods.effective_neutral(),
 				Modifiers.CAP_NEUTRAL, "%.2f")),
 		Reward.new("interest", Rarity.B, "利息", "每波结束时按当时的存款给 8%（钱留着不花才生息）",
-			func(rs) -> void: rs.mods.interest_pct += 0.08,
+			func(rs) -> void: rs.mods.interest_pct += 0.08 * Balance.REWARD_POWER,
 			func(rs) -> String:
 				# 光给百分比没用，玩家想知道的是「这一波结束到底进账多少」
 				var now: float = rs.mods.effective_interest()
@@ -138,19 +138,19 @@ static func _build() -> void:
 					roundi(now * 100.0), rs.gold, floori(float(rs.gold) * now),
 					roundi(nxt * 100.0), floori(float(rs.gold) * nxt)]),
 		Reward.new("refine", Rarity.B, "精炼", "属性塔升级与练级费用 -20%",
-			func(rs) -> void: rs.mods.upgrade_discount += 0.20,
+			func(rs) -> void: rs.mods.upgrade_discount += 0.20 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 -%d%% / 封顶 -%d%%" % [
 				roundi(rs.mods.effective_upgrade_discount() * 100.0),
 				roundi(Modifiers.CAP_UPGRADE_DISCOUNT * 100.0)]),
 
 		# ---- A：改变打法的强力牌 ----
 		Reward.new("counter", Rarity.A, "锐利", "克制倍率 +0.25",
-			func(rs) -> void: rs.mods.counter_bonus += 0.25,
+			func(rs) -> void: rs.mods.counter_bonus += 0.25 * Balance.REWARD_POWER,
 			func(rs) -> String: return _cap(
 				Balance.MULT_COUNTER + rs.mods.effective_counter_bonus(),
 				Balance.MULT_COUNTER + Modifiers.CAP_COUNTER_BONUS, "×%.2f")),
 		Reward.new("slow", Rarity.A, "凝滞", "命中附带 20% 减速，持续 1.5 秒",
-			func(rs) -> void: rs.mods.slow_pct += 0.20,
+			func(rs) -> void: rs.mods.slow_pct += 0.20 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 %d%% / 封顶 %d%%" % [
 				roundi(rs.mods.effective_slow() * 100.0),
 				roundi(Modifiers.CAP_SLOW * 100.0)]),
@@ -161,7 +161,7 @@ static func _build() -> void:
 			func(rs) -> void: rs.mods.free_upgrades += 1,
 			func(rs) -> String: return "手上 %d 张" % rs.mods.free_upgrades),
 		Reward.new("surge", Rarity.A, "蓄能", "技能冷却 -15%",
-			func(rs) -> void: rs.mods.skill_cd_cut += 0.15,
+			func(rs) -> void: rs.mods.skill_cd_cut += 0.15 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前冷却 %.1f 秒 / 最低 %.1f 秒" % [
 				rs.skill_cooldown(),
 				Balance.SKILL_COOLDOWN * (1.0 - Modifiers.CAP_SKILL_CD)]),
@@ -176,24 +176,24 @@ static func _build() -> void:
 				rs.mods.charge_multiplier(),
 				1.0 + 2.0 * float(rs.mods.charge_level + 1)]),
 		Reward.new("lock", Rarity.B, "锁定", "连续命中同一只怪，每次伤害 +8%",
-			func(rs) -> void: rs.mods.lock_bonus += 0.08,
+			func(rs) -> void: rs.mods.lock_bonus += 0.08 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 +%d%%/层，最多叠 %d 层" % [
 				roundi(rs.mods.lock_bonus * 100.0), Modifiers.CAP_LOCK_STACKS]),
 		Reward.new("foundation", Rarity.B, "奠基", "下一座塔位半价",
 			func(rs) -> void: rs.mods.build_discount_charges += 1,
 			func(rs) -> String: return "手上 %d 张半价券" % rs.mods.build_discount_charges),
 		Reward.new("execute", Rarity.A, "处决", "对血量低于 25% 的怪，伤害 +80%",
-			func(rs) -> void: rs.mods.execute_bonus += 0.8,
+			func(rs) -> void: rs.mods.execute_bonus += 0.8 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 +%d%%" % roundi(rs.mods.execute_bonus * 100.0)),
 		Reward.new("fission", Rarity.A, "裂变", "击杀时对附近的怪造成死者最大血量 15% 的伤害",
-			func(rs) -> void: rs.mods.fission_ratio += 0.15,
+			func(rs) -> void: rs.mods.fission_ratio += 0.15 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 %d%%" % roundi(rs.mods.fission_ratio * 100.0)),
 		Reward.new("killstreak", Rarity.A, "连杀", "本波不漏怪时，赏金逐只递增 5%",
-			func(rs) -> void: rs.mods.killstreak_bonus += 0.05,
+			func(rs) -> void: rs.mods.killstreak_bonus += 0.05 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 +%d%%/只，最多 %d 只（漏怪清零）" % [
 				roundi(rs.mods.killstreak_bonus * 100.0), Modifiers.CAP_KILLSTREAK]),
 		Reward.new("mono", Rarity.S, "独尊", "场上只有一种属性的塔时，该属性伤害 +60%",
-			func(rs) -> void: rs.mods.mono_bonus += 0.6,
+			func(rs) -> void: rs.mods.mono_bonus += 0.6 * Balance.REWARD_POWER,
 			func(rs) -> String:
 				var only: String = _mono_name(rs)
 				return "目前 +%d%%　·　%s" % [roundi(rs.mods.mono_bonus * 100.0),
@@ -212,7 +212,7 @@ static func _build() -> void:
 					roundi(m.crit_chance_at(m.crit_level) * 100.0), m.crit_mult_at(m.crit_level),
 					roundi(m.crit_chance_at(nxt) * 100.0), m.crit_mult_at(nxt)]),
 		Reward.new("burst", Rarity.S, "爆发", "技能伤害 +25%",
-			func(rs) -> void: rs.mods.skill_power += 0.25,
+			func(rs) -> void: rs.mods.skill_power += 0.25 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 +%d%%" % roundi(rs.mods.skill_power * 100.0)),
 	]
 
