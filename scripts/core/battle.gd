@@ -33,9 +33,6 @@ var last_spawns: Array[Dictionary] = []
 var last_boss_phases: Array[Dictionary] = []
 ## 「连杀」用：本波连续击杀数，漏一只就清零
 var kill_streak: int = 0
-## 裂变递归保护：裂变溅射不再触发裂变，否则一次击杀能连锁清场
-var _in_fission: bool = false
-
 var _specs: Array[Dictionary] = []
 var _next_spawn: int = 0
 
@@ -60,7 +57,7 @@ func step(dt: float) -> void:
 	time += dt
 	_spawn()
 	_boss_phases()
-	_elite_casts()
+	_elite_casts(dt)
 	_advance(dt)
 	_fire(dt)
 	_cleanup()
@@ -112,45 +109,68 @@ func _align_casts(e: Enemy) -> void:
 	e.cast_index = passed
 
 ## 精英一出场就放一次技能，之后每过一个触发点再放一次。
-## 放几次由难度决定（简单 1 次 / 困难 3 次 / 地狱 5 次）。
-func _elite_casts() -> void:
+## 放几次由难度决定（简单 1 次 / 困难 2 次 / 地狱 3 次）。
+##
+## 分两步：先起前摇（停住、弹技能名），前摇走完才真的结算效果。
+## 一次只进一个触发点 —— 前摇期间不动，也就不可能同时压到下一个点。
+func _elite_casts(dt: float) -> void:
 	var limit: int = Balance.elite_casts()
 	for e: Enemy in active:
 		if not e.alive or not e.is_elite:
 			continue
+		if e.cast_time > 0.0:
+			e.cast_time -= dt
+			if e.cast_time <= 0.0:
+				e.cast_time = 0.0
+				_cast_elite_skill(e)
+			continue
 		var progress: float = e.distance / Balance.TRACK_LENGTH
-		while e.cast_index < limit \
+		if e.cast_index < limit \
 				and e.cast_index < Balance.ELITE_CAST_POINTS.size() \
 				and progress >= float(Balance.ELITE_CAST_POINTS[e.cast_index]):
 			e.cast_index += 1
-			_cast_elite_skill(e)
+			_begin_cast(e)
+
+## 起前摇：先把技能名抛给表现层，怪站着不动，效果还没发生。
+func _begin_cast(src: Enemy) -> void:
+	src.cast_time = Balance.ELITE_CAST_WINDUP
+	last_elite_casts.append({
+		"element": int(src.element), "dist": src.distance, "name": _skill_name(src),
+		"boss": src.is_boss, "windup": true,
+	})
+
+## 这只怪这次要放的技能叫什么。前摇要先把名字喊出来，所以得能单独算。
+func _skill_name(src: Enemy) -> String:
+	if src.is_boss:
+		return "召唤"
+	match src.element:
+		Types.Element.FIRE: return "浴火"
+		Types.Element.WOOD: return "分裂"
+		Types.Element.WATER: return "潮涌"
+	return "技能"
 
 ## 精英技能按属性分。三种各自强化本属性的性格 ——
 ## 火本来就快，就让全场更快；木本来就厚，就让全场更厚；
 ## 水的威胁是拖时间，就直接把怪往前推，偷走你的输出窗口。
 func _cast_elite_skill(src: Enemy) -> void:
-	var name: String = ""
+	var name: String = _skill_name(src)
 	match src.element:
 		Types.Element.FIRE:
-			name = "浴火"
 			for o: Enemy in active:
 				if o.alive and not o.is_elite:
 					o.haste_pct = Balance.ELITE_FIRE_SPEED_PCT
 					o.haste_time = Balance.ELITE_FIRE_DURATION
 		Types.Element.WOOD:
-			name = "分裂"
 			# 布尔标记，重复挂也不会叠加；分出来的小怪不带标记，只会分裂一次
 			for o: Enemy in active:
 				if o.alive and not o.is_elite:
 					o.split_on_death = true
 		Types.Element.WATER:
-			name = "潮涌"
 			for o: Enemy in active:
 				if o.alive and not o.is_elite:
 					o.hp = o.max_hp
 	# BOSS 不放属性技能，它召唤护卫 —— 分散你的火力比单纯变强更难处理
 	if src.is_boss:
-		name = "召唤"
 		for i: int in Balance.BOSS_SUMMON_COUNT:
 			var g: Enemy = Enemy.new(src.element,
 				src.max_hp * Balance.BOSS_SUMMON_HP,
@@ -162,7 +182,7 @@ func _cast_elite_skill(src: Enemy) -> void:
 			last_spawns.append({"dist": g.distance, "element": int(g.element)})
 	last_elite_casts.append({
 		"element": int(src.element), "dist": src.distance, "name": name,
-		"boss": src.is_boss,
+		"boss": src.is_boss, "windup": false,
 	})
 
 func _advance(dt: float) -> void:
@@ -174,6 +194,9 @@ func _advance(dt: float) -> void:
 			continue
 		if e.haste_time > 0.0:
 			e.haste_time -= dt
+		# 施法前摇期间钉在原地。还会挨打、还会掉血，就是不往前走。
+		if e.cast_time > 0.0:
+			continue
 		var sp: float = e.speed()
 		# 缠绕优先：定身期间完全不动
 		if e.root_time > 0.0:
@@ -333,7 +356,6 @@ func _on_killed(e: Enemy) -> void:
 			last_heals.append({"dist": e.distance, "amount": roundi(amount), "count": healed})
 	_split(e)
 	_boss_death(e)
-	_fission(e)
 
 ## BOSS 死时裂成三只精英（火木水各一）。
 ## 真正的考验在这之后 —— 别把技能和资源在本体身上一次打光。
@@ -374,26 +396,6 @@ func _split(src: Enemy) -> void:
 ## 赏金。「连杀」会让本波连续击杀的赏金逐只递增，漏一只清零。
 func _bounty_of(e: Enemy) -> int:
 	return roundi(float(e.bounty) * mods.killstreak_multiplier(kill_streak))
-
-## 裂变：击杀时对赛道上附近的怪溅射「死者最大血量」的一定比例。
-## 溅射造成的击杀不再触发裂变，否则一次击杀能连锁清掉整条赛道。
-func _fission(src: Enemy) -> void:
-	if mods.fission_ratio <= 0.0 or _in_fission:
-		return
-	_in_fission = true
-	var dmg: float = src.max_hp * mods.fission_ratio
-	for o: Enemy in active:
-		if not o.alive or o == src:
-			continue
-		if absf(o.distance - src.distance) > Modifiers.FISSION_RADIUS:
-			continue
-		var dealt: float = minf(dmg, o.hp)
-		damage_total += dealt
-		if o.take_damage(dmg):
-			_on_killed(o)
-		last_ticks.append({"dist": o.distance, "damage": roundi(dealt),
-			"killed": not o.alive, "element": int(o.element), "elite": o.is_elite})
-	_in_fission = false
 
 ## 场上是不是只有一种属性的塔（「独尊」用）。中途建塔会变，所以每次开火都算一次。
 func _mono_element() -> Types.Element:

@@ -137,6 +137,7 @@ var over_dim: ColorRect
 var over_title: Label
 var over_detail: Label
 var over_again: Button
+var over_home: Button
 
 func _ready() -> void:
 	Balance.reset()
@@ -234,8 +235,17 @@ func _reset_run() -> void:
 func _show_title() -> void:
 	phase = Phase.TITLE
 	title_layer.visible = true
+	# 存档可能在这一局里解锁了新难度，而且选中的那档不一定还合法
+	if not Progress.is_unlocked(chosen_difficulty):
+		chosen_difficulty = Progress.highest_unlocked()
 	_refresh_difficulty_buttons()
 	_refresh()
+
+## 从结算页回首页：整局清干净再显示标题，不然底下还留着上一局的残局
+func _back_to_title() -> void:
+	sfx.play("select", -18.0)
+	_reset_run()
+	_show_title()
 
 ## 开始游戏：先送三次奖励再打第一波。
 ## 开局就让玩家做三次选择，第一波之前手上已经有东西了，爽感前置。
@@ -245,6 +255,7 @@ func _start_game() -> void:
 	title_layer.visible = false
 	reward_is_opening = true
 	reward_round = 0
+	run.begin_reward_phase()
 	_next_reward_round()
 
 # ---- 主循环 ----------------------------------------------------------------
@@ -327,16 +338,25 @@ func _burst(pos: Vector2, color: Color, amount: int) -> void:
 func _collect_beams() -> void:
 	# 精英放技能：飘个技能名 + 全屏闪一下该属性的颜色。
 	# 不给反馈的话玩家只会觉得「怪突然变快了」，不知道是被精英加了 buff。
+	# 精英施法分两拍：前摇先报名字（怪站住不动），前摇走完才是真正的爆发。
+	# 全挤在同一帧的话，玩家只看到「全场突然回满血」，来不及知道是谁干的。
 	for ec: Dictionary in run.battle.last_elite_casts:
 		var ecolor: Color = Palette.of(ec["element"])
 		var epos: Vector2 = point_at(float(ec["dist"]))
-		while floaters.size() >= MAX_FLOATERS:
-			floaters.remove_at(0)
-		floaters.append({
-			"pos": epos + Vector2(0, -34.0), "dmg": 0, "key": -1,
-			"text": String(ec["name"]), "color": ecolor,
-			"size": 26 if bool(ec.get("boss", false)) else 21, "life": FLOAT_LIFE * 1.8,
-		})
+		var is_boss: bool = bool(ec.get("boss", false))
+		if bool(ec.get("windup", false)):
+			while floaters.size() >= MAX_FLOATERS:
+				floaters.remove_at(0)
+			# 名字要撑过整段前摇，不然字还没读完技能就已经放完了
+			floaters.append({
+				"pos": epos + Vector2(0, -34.0), "dmg": 0, "key": -1,
+				"text": String(ec["name"]), "color": ecolor,
+				"size": 26 if is_boss else 21,
+				"life": Balance.ELITE_CAST_WINDUP + FLOAT_LIFE,
+			})
+			_burst(epos, ecolor, 6)
+			sfx.play("select", -14.0, 80)
+			continue
 		skill_flash = {"color": ecolor, "life": SKILL_FLASH_LIFE}
 		_burst(epos, ecolor, 16)
 		sfx.play("skill", -11.0, 120)
@@ -478,6 +498,7 @@ func _finish_wave() -> void:
 		_show_over()
 		return
 	reward_round = 0
+	run.begin_reward_phase()
 	_next_reward_round()
 
 func _next_reward_round() -> void:
@@ -1218,6 +1239,13 @@ func _build_over_layer() -> void:
 	over_again.pressed.connect(_start_game)
 	over_layer.add_child(over_again)
 
+	# 回首页才能换难度 —— 「再来一局」是直接用同一档重开
+	over_home = Button.new()
+	over_home.text = "返回首页"
+	_style(over_home, Palette.PANEL_HI)
+	over_home.pressed.connect(_back_to_title)
+	over_layer.add_child(over_home)
+
 ## 通用的两栏资讯弹窗（加成面板、说明面板共用同一套结构）
 func _build_info_panel(on_close: Callable, right_color: Color) -> Dictionary:
 	var layer: Control = Control.new()
@@ -1347,6 +1375,8 @@ func _build_title_layer() -> void:
 		title_layer.add_child(b)
 
 func _choose_difficulty(d: Balance.Difficulty) -> void:
+	if not Progress.is_unlocked(d):
+		return
 	chosen_difficulty = d
 	sfx.play("select", -18.0)
 	_refresh_difficulty_buttons()
@@ -1354,7 +1384,11 @@ func _choose_difficulty(d: Balance.Difficulty) -> void:
 func _refresh_difficulty_buttons() -> void:
 	for d: Balance.Difficulty in diff_buttons.keys():
 		var b: Button = diff_buttons[d]
+		var unlocked: bool = Progress.is_unlocked(d)
 		var on: bool = d == chosen_difficulty
+		# 锁着的档位就是一颗点不动的灰按钮，不额外加字 —— 标题页已经够挤了
+		b.disabled = not unlocked
+		b.text = Balance.DIFFICULTY_NAMES[d]
 		_style(b, Palette.OK if on else Palette.PANEL_HI,
 			Palette.GOLD if on else Color(0, 0, 0, 0))
 	var hints: Dictionary = {
@@ -1430,7 +1464,7 @@ func _help_bbcode() -> String:
 	t.append("[color=#%s]【塔】[/color]" % gold)
 	t.append("没有射程，全部打得到。塔位越后面越贵（60 → 810）。")
 	t.append("先建无属性塔，再升级成属性塔；[color=#%s]升级后不能改属性[/color]，只能拆掉重建。" % bad)
-	t.append("[color=#%s]整局只有 1 次免费拆除[/color]（全额返还），之后只退 60%%。" % bad)
+	t.append("[color=#%s]免费拆除[/color]（全额返还）按难度给：简单每波 1 次；困难每波 1 次、整局上限 3 次；地狱整局只有 1 次。之后只退 60%%。" % bad)
 	t.append("属性塔可练级，每级多打一个目标。[color=#%s]塔位上的小方点＝当前等级。[/color]" % dim)
 	t.append("")
 	t.append("[color=#%s]【技能】[/color]" % gold)
@@ -1446,7 +1480,7 @@ func _help_bbcode() -> String:
 		% [h.call(Palette.rarity(3)), h.call(Palette.rarity(2)),
 			h.call(Palette.rarity(1)), h.call(Palette.rarity(0))])
 	t.append("可重复领取、效果累加。[color=#%s]堆到封顶就不再出现。[/color]" % dim)
-	t.append("刷新第一次免费，[color=#%s]之后越刷越贵[/color]。" % bad)
+	t.append("免费刷新按难度给：简单[color=#%s]每次选择 1 次[/color]；困难[color=#%s]每轮 3 次选择共 1 次[/color]；地狱[color=#%s]没有免费刷新[/color]。之后越刷越贵。" % [ok, hot, bad])
 	t.append("")
 	t.append("[color=#%s]【利息】[/color]" % gold)
 	t.append("每波结束按[color=#%s]当时手上的存款[/color]额外给钱，封顶 30%%。" % hot)
@@ -1493,6 +1527,24 @@ func _changelog_bbcode() -> String:
 	var water: String = h.call(Palette.WATER)
 	var t: Array[String] = []
 
+	t.append("[color=#%s]v1.3[/color]" % gold)
+	t.append("· [color=#%s]难度要一档一档解锁[/color]：通关简单才开困难，通关困难才开地狱" % hot)
+	t.append("· 结算页多了[color=#%s]返回首页[/color]，不用重开游戏才能换难度" % ok)
+	t.append("· [color=#%s]精英和 BOSS 放技能前会先停 0.5 秒[/color]，头上弹技能名" % hot)
+	t.append("[color=#%s]  站着不动也照样挨打 —— 前摇结束前打死它，这次技能就没了[/color]" % dim)
+	t.append("· [color=#%s]克制差距从 12 倍拉到 18 倍[/color]，打错属性更难受" % bad)
+	t.append("· 奖励池大改：")
+	t.append("[color=#%s]  淬火 / 急速改成「随机一种属性」，只加那一种塔，无属性塔吃不到[/color]" % dim)
+	t.append("[color=#%s]  贯穿之刃升到 S 级、真伤 10 点；破绽改成 20%% 起步、每级 +15%% / +0.5 且不封顶[/color]" % dim)
+	t.append("[color=#%s]  移除爆发、奠基、免费升级券、裂变[/color]" % dim)
+	t.append("· 经济重调：")
+	t.append("[color=#%s]  击杀赏金大幅下调（原本一局能剩几千金花不完）[/color]" % dim)
+	t.append("[color=#%s]  塔位便宜一半：60/80/90/120/150/180/230/290[/color]" % dim)
+	t.append("[color=#%s]  练级便宜一半：120/240/480[/color]" % dim)
+	t.append("· [color=#%s]免费拆除、免费刷新都改成按难度给[/color]：" % hot)
+	t.append("[color=#%s]  拆除　简单 每波 1 次 / 困难 每波 1 次但整局上限 3 / 地狱 整局 1 次[/color]" % dim)
+	t.append("[color=#%s]  刷新　简单 每次选择 1 次 / 困难 每轮 3 次选择共 1 次 / 地狱 没有免费[/color]" % dim)
+	t.append("")
 	t.append("[color=#%s]v1.2[/color]" % gold)
 	t.append("· 标题页可以选[color=#%s]难度[/color]了：简单 / 困难 / 地狱" % hot)
 	t.append("· 加了这个[color=#%s]更新日志[/color]页" % hot)
@@ -1693,8 +1745,10 @@ func _position_ui() -> void:
 	over_title.size = Vector2(vw, 50)
 	over_detail.position = Vector2(vw * 0.2, vh * 0.30 + 66.0)
 	over_detail.size = Vector2(vw * 0.6, 80)
-	over_again.position = Vector2(vw * 0.5 - 70.0, vh * 0.30 + 160.0)
+	over_again.position = Vector2(vw * 0.5 - 148.0, vh * 0.30 + 160.0)
 	over_again.size = Vector2(140, 44)
+	over_home.position = Vector2(vw * 0.5 + 8.0, vh * 0.30 + 160.0)
+	over_home.size = Vector2(140, 44)
 
 func _place_panel(layer: Control, box: Panel, title: Label,
 		body: RichTextLabel, want_w: float, want_h: float) -> void:
@@ -1746,7 +1800,13 @@ func _refresh_hud() -> void:
 		if run.mods.effective_interest() > 0.0:
 			bits.append("利息 +%d" % run.interest_preview())
 		if run.free_sells > 0:
-			bits.append("免费拆除 %d 次" % run.free_sells)
+			# 整局有上限的档位要把「还剩几次」一起写出来，
+			# 不然玩家以为每波都有，用到第四波才发现没了
+			var left: int = run.free_sells_left()
+			if left < 0:
+				bits.append("免费拆除 %d 次" % run.free_sells)
+			else:
+				bits.append("免费拆除 %d 次（整局还剩 %d）" % [run.free_sells, left])
 		lbl_preview.text = "　　".join(bits)
 	else:
 		lbl_preview.text = ""
@@ -1780,11 +1840,11 @@ func _slot_signature() -> String:
 	if selected_slot < 0:
 		return ""
 	var t: Tower = run.tower_at(selected_slot)
-	return "%d|%s|%d|%d|%d|%d" % [
+	return "%d|%s|%d|%d|%d" % [
 		selected_slot,
 		"none" if t == null else str(int(t.element)),
 		0 if t == null else t.level,
-		run.free_sells, run.mods.free_upgrades, int(phase)]
+		run.free_sells, int(phase)]
 
 ## 技能按钮：没解锁就藏起来，冷却中显示剩余秒数
 func _refresh_skill_buttons() -> void:
@@ -1834,14 +1894,11 @@ func _refresh_slot_panel() -> void:
 			"check": func() -> bool: return run.gold >= cost})
 	else:
 		if not t.is_upgraded():
-			var free: bool = run.mods.free_upgrades > 0
 			for e: Types.Element in Types.ELEMENTAL:
 				specs.append({
-					"text": "%s %s" % [Types.name_of(e),
-						"免费" if free else str(run.upgrade_cost())],
+					"text": "%s %d" % [Types.name_of(e), run.upgrade_cost()],
 					"color": Palette.of(e), "on": _on_upgrade.bind(e),
-					"check": func() -> bool:
-						return run.mods.free_upgrades > 0 or run.gold >= run.upgrade_cost(),
+					"check": func() -> bool: return run.gold >= run.upgrade_cost(),
 				})
 		if t.can_level_up():
 			var lc: int = run.level_up_cost(selected_slot)
@@ -1916,6 +1973,11 @@ func _show_over() -> void:
 		Palette.OK if run.won else Palette.LIFE)
 	var line: String = "剩余生命 %d" % run.lives if run.won \
 		else "撑到第 %d 波" % run.wave_index
+	# 首次通关才报喜：重复通关每次都弹一遍「解锁了困难」很烦
+	if run.won and Progress.mark_cleared(Balance.difficulty):
+		var nxt: Balance.Difficulty = Progress.unlocks(Balance.difficulty)
+		if nxt != Balance.difficulty:
+			line += "　·　解锁了「%s」难度" % Balance.DIFFICULTY_NAMES[nxt]
 	over_detail.text = "%s\n最终加成：%s" % [line, run.mods.describe()]
 
 # ---- 小工具 ----------------------------------------------------------------

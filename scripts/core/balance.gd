@@ -8,7 +8,9 @@ extends RefCounted
 ## 火 → 木 → 水 → 火
 static var MULT_COUNTER: float = 3.0      ## 克制
 static var MULT_SAME: float = 0.55        ## 同属性
-static var MULT_COUNTERED: float = 0.25   ## 被克制
+## 被克制。跟 MULT_COUNTER 的比值就是「克制差距」，现在是 3.0 / 0.1667 = 18 倍。
+## 比无属性（0.30）还低一截 —— 打错属性比不带属性更惨，这是故意的。
+static var MULT_COUNTERED: float = 0.1667 ## 被克制（克制差距 18 倍）
 static var MULT_NEUTRAL_ATK: float = 0.30 ## 无属性塔打有属性怪。压到 0.30 是为了堵死「只堆无属性塔」的歪路，
 ## 模拟实测 0.45 时该打法通关率 20%，0.30 时降到 0%。
 
@@ -23,12 +25,28 @@ static var TOWER_COST: int = 60
 static var UPGRADE_COST: int = 60
 ## 拆塔返还已投入金额的比例
 static var REFUND_RATE: float = 0.6
-## 整局免费拆除的次数（不是每波），这几次全额返还。
-## 每波都给一次的话，「拆掉重组」变成零成本的常规操作，
-## 「升级后不能改属性」那条硬规则就形同虚设了。
+## 免费拆除（全额返还）。按难度分两条线控制：
+##
+##   PER_WAVE  每波开始补几次（0 = 不按波补，整局定额一次性发下去）
+##   TOTAL     整局最多用几次（-1 = 不限）
+##
+##   简单：每波 1 次，不限总量      —— 想怎么重组就怎么重组，专心学克制关系
+##   困难：每波 1 次，整局上限 3    —— 能救三次，但得想清楚花在哪一波
+##   地狱：整局就 1 次              —— 基本等于「盖下去就别想改了」
+##
 ## 模拟实测：只有 60% 返还时，「拆掉用不上的塔」的通关率反而低于「从不拆塔」——
-## 损耗吃掉了调整阵容的收益。给每波一次免费拆除，才让「看预告重组阵容」成为真玩法。
-static var FREE_SELLS_PER_RUN: int = 1
+## 损耗吃掉了调整阵容的收益。免费拆除就是「看预告重组阵容」这条玩法的入场券，
+## 所以它按难度收紧，而不是所有档位一刀切。
+static var FREE_SELLS_PER_WAVE: Dictionary = {
+	Difficulty.EASY: 1,
+	Difficulty.HARD: 1,
+	Difficulty.HELL: 0,
+}
+static var FREE_SELLS_TOTAL: Dictionary = {
+	Difficulty.EASY: -1,
+	Difficulty.HARD: 3,
+	Difficulty.HELL: 1,
+}
 static var TOWER_BASE_DAMAGE: float = 10.0
 static var TOWER_BASE_RATE: float = 1.2   ## 每秒攻击次数
 
@@ -37,13 +55,16 @@ static var TOWER_BASE_RATE: float = 1.2   ## 每秒攻击次数
 ## 1 级打 1 个，4 级打 4 个 —— 等于 4 倍输出，所以价格必须陡。
 static var MAX_TOWER_LEVEL: int = 4
 ## 升到第 n 级的价格 = UPGRADE_COST * LEVEL_COST_GROWTH^(n-1)，并取整到 10 的倍数
-## → Lv2 160 / Lv3 410 / Lv4 1050
+## → Lv2 120 / Lv3 240 / Lv4 480
 ##
 ## 加入「开局奖励 + 可刷新」之后，这条已经不是有效的难度旋钮了
 ## （4.0 → 95.3%、8.5 → 86.0%），因为玩家靠分散 build 和技能取胜，
-## 等级不再是瓶颈。定在 2.6 纯粹是为了让 Lv4 真的练得到，
-## 难度改由 HP_GROWTH 控制。
-static var LEVEL_COST_GROWTH: float = 2.6
+## 等级不再是瓶颈。难度由 HP_GROWTH 控制。
+##
+## 2.6 → 2.0：赏金砍到 3+0.9n 之后，练到 Lv4 的 1620 金够盖三座新塔，
+## 练级在数值上完全不成立，一条升级线就这么废掉了。
+## 现在练满一座是 840，跟「多盖一座塔再升属性」处在同一个量级，才真的要比较。
+static var LEVEL_COST_GROWTH: float = 2.0
 
 # ---- 技能 ------------------------------------------------------------------
 ## 同属性塔达到这个数量就解锁该属性的技能
@@ -106,8 +127,17 @@ static var COUNT_BASE: int = 6
 static var COUNT_PER_WAVE: float = 1.6
 static var SPAWN_INTERVAL: float = 0.75
 
-static var BOUNTY_BASE: int = 6
-static var BOUNTY_PER_WAVE: int = 2
+## 击杀赏金 = round(BASE + PER_WAVE × 波次)，逐波 4 5 6 7 8 8 9 10 11 12。
+## 原本是 6 + 2×波次，配上「连杀」之后一局能滚出 7000+ 金，
+## 后半局钱根本花不完 —— 击杀在数值上变成纯粹的数字在涨，没有任何取舍。
+##
+## 一度砍到 3 + 0.6n，但那把「盖塔」本身也砍没了：模拟里一局只盖得起 3.6 座
+## （满配 8），一半塔位整局空着，「照克制调属性」自然就赢不了「平均铺」——
+## 连塔都盖不满，哪来的余裕调整。3 + 0.9n 是砍掉花不完的钱、又留住建设空间的位置。
+##
+## PER_WAVE 用小数是故意的：整数最小步长是 1，在这个量级上一步就是 20% 的差距。
+static var BOUNTY_BASE: float = 3.0
+static var BOUNTY_PER_WAVE: float = 0.9
 static var WAVE_CLEAR_GOLD: int = 40
 
 ## 精英怪出现的波次。属性是随机抽的（三种里任选，不跟着本波的属性走），
@@ -141,13 +171,31 @@ static var WAVE_THREE_ELEMENTS: int = 7
 static var REWARD_ROUNDS: int = 3
 static var REWARD_CHOICES: int = 3
 
-## 刷新三选一的价格。每轮头几次免费，之后按 BASE × GROWTH^n 递增，
-## 再乘一个随波次走的系数 —— 后期金流是前期的好几倍，不跟着涨就等于免费。
+## 免费刷新的额度和补充节奏，按难度分：
+##
+##   简单：每次选择都补 1 次    —— 三张都不喜欢随时能洗
+##   困难：每个奖励阶段 1 次    —— 3 次选择共享，得想清楚花在哪一次
+##   地狱：没有免费刷新         —— 抽到什么就是什么，想换就掏钱
+##
+## 每次选择都送的话等于每波白送 3 次刷新，玩家总能把不喜欢的三张洗掉，
+## 「这三张里挑一张」的取舍就不存在了 —— 所以它是按难度收紧的，不是一刀切。
+static var REROLL_FREE_PER_ROUND: Dictionary = {
+	Difficulty.EASY: 1,
+	Difficulty.HARD: 0,
+	Difficulty.HELL: 0,
+}
+static var REROLL_FREE_PER_PHASE: Dictionary = {
+	Difficulty.EASY: 0,
+	Difficulty.HARD: 1,
+	Difficulty.HELL: 0,
+}
+
+## 付费刷新的价格：BASE × GROWTH^(已付费次数)，再乘一个随波次走的系数 ——
+## 后期金流是前期的好几倍，不跟着涨就等于免费。
 ##
 ## 原本定的 1、2、3、4、5 块钱，对上百的金流基本等于白送：
 ## 玩家会一直刷到出 S 卡为止，三选一就失去意义了。
 ## 现在第 1 波是 20 / 40 / 90 / 190，第 10 波是 40 / 80 / 170 / 350。
-static var REROLL_FREE_PER_ROUND: int = 1
 static var REROLL_BASE_COST: int = 20
 static var REROLL_COST_GROWTH: float = 2.1
 static var REROLL_WAVE_SCALE: float = 0.1
@@ -187,6 +235,12 @@ static func difficulty_name() -> String:
 ## 这几个数对应蛇行赛道上出场 + 四个拐弯的大致位置。
 static var ELITE_CAST_POINTS: Array[float] = [0.0, 0.22, 0.44, 0.66, 0.85]
 
+## 施法前摇：精英/BOSS 走到触发点先停住，弹技能名，这段时间过完效果才生效。
+## 没有前摇的话技能是「凭空发生」的 —— 全场突然加速、突然回满血，
+## 玩家只看得到结果，来不及把它跟某只怪联系起来。
+## 停住不动也给了一个窗口：在前摇结束前把它打死就能打断这次施法。
+static var ELITE_CAST_WINDUP: float = 0.5
+
 ## 各难度实际会放几次（从上面的列表里取前 N 个）
 ## 原本是 1/3/5，但实测困难只有 3%、地狱 0/200 局 —— 不是难，是数学上不可能。
 ## 精英技能的压力不是线性叠加：一局有 4 场精英，5 次就是一局承受 20 次，
@@ -225,6 +279,22 @@ static var BOSS_DEATH_ELITE_BOUNTY: float = 0.12
 ## 水 · 潮涌：全场杂兵血量回满。水的威胁就是拖时间，这一下直接把你的输出清零。
 static var ELITE_WATER_HEAL_FULL: bool = true
 
+## 当前难度每次选择补几次免费刷新（0 = 不按次补）
+static func reroll_free_per_round() -> int:
+	return int(REROLL_FREE_PER_ROUND.get(difficulty, 0))
+
+## 当前难度每个奖励阶段给几次免费刷新
+static func reroll_free_per_phase() -> int:
+	return int(REROLL_FREE_PER_PHASE.get(difficulty, 0))
+
+## 当前难度每波补几次免费拆除（0 = 不按波补）
+static func free_sells_per_wave() -> int:
+	return int(FREE_SELLS_PER_WAVE.get(difficulty, 0))
+
+## 当前难度整局最多用几次免费拆除（-1 = 不限）
+static func free_sells_total() -> int:
+	return int(FREE_SELLS_TOTAL.get(difficulty, 1))
+
 static func elite_casts() -> int:
 	return int(ELITE_CASTS_BY_DIFFICULTY.get(difficulty, 1))
 
@@ -235,7 +305,11 @@ static var SIM_STEP: float = 0.05         ## 无头模拟步长（20Hz）
 ## 第 n 座塔的价格 = TOWER_COST * TOWER_COST_GROWTH^n。
 ## 没有射程、塔位只有 8 个，如果塔很便宜，前三波就会填满、金钱从此失去意义。
 ## 让后面的塔越来越贵，「要不要开第 6 座」才会是一个真决策。
-static var TOWER_COST_GROWTH: float = 1.45
+##
+## 1.45 → 1.25：赏金砍完之后第 8 个塔位要 810，一局收入才 2183，
+## 后面三个塔位等于不存在，「调整属性」连工具都没有。
+## 现在八座共 1200（原本 2470），最贵的一座 290。
+static var TOWER_COST_GROWTH: float = 1.25
 
 ## 把可调参数恢复成基准值（模拟扫参数后要复位，否则污染下一批）
 ## 所有玩家看得到的花费都过一次这个函数。
@@ -247,14 +321,16 @@ static func round_cost(v: float) -> int:
 static func reset() -> void:
 	MULT_COUNTER = 3.0
 	MULT_SAME = 0.55
-	MULT_COUNTERED = 0.25
+	MULT_COUNTERED = 0.1667
 	MULT_NEUTRAL_ATK = 0.30
+	FREE_SELLS_PER_WAVE = {Difficulty.EASY: 1, Difficulty.HARD: 1, Difficulty.HELL: 0}
+	FREE_SELLS_TOTAL = {Difficulty.EASY: -1, Difficulty.HARD: 3, Difficulty.HELL: 1}
 	START_GOLD = 220
 	START_LIVES = 20
 	TOWER_COST = 60
 	UPGRADE_COST = 60
 	MAX_TOWER_LEVEL = 4
-	LEVEL_COST_GROWTH = 2.6
+	LEVEL_COST_GROWTH = 2.0
 	SKILL_REQUIRED_TOWERS = 3
 	SKILL_COOLDOWN = 18.0
 	SKILL_DAMAGE_PER_LEVEL = 26.0
@@ -264,7 +340,7 @@ static func reset() -> void:
 	SKILL_SLOW_PCT = 0.5
 	SKILL_SLOW_DURATION = 4.0
 	SKILL_ROOT_DURATION = 2.5
-	TOWER_COST_GROWTH = 1.45
+	TOWER_COST_GROWTH = 1.25
 	TOWER_BASE_DAMAGE = 10.0
 	TOWER_BASE_RATE = 1.2
 	TRACK_LENGTH = 24.0
@@ -273,6 +349,7 @@ static func reset() -> void:
 	difficulty = Difficulty.EASY
 	HP_GROWTH = DIFFICULTY_HP_GROWTH[Difficulty.EASY]
 	ELITE_CAST_POINTS = [0.0, 0.22, 0.44, 0.66, 0.85]
+	ELITE_CAST_WINDUP = 0.5
 	ELITE_CASTS_BY_DIFFICULTY = {
 		Difficulty.EASY: 1, Difficulty.HARD: 2, Difficulty.HELL: 3,
 	}
@@ -291,10 +368,11 @@ static func reset() -> void:
 	COUNT_BASE = 6
 	COUNT_PER_WAVE = 1.6
 	SPAWN_INTERVAL = 0.75
-	BOUNTY_BASE = 6
-	BOUNTY_PER_WAVE = 2
+	BOUNTY_BASE = 3.0
+	BOUNTY_PER_WAVE = 0.9
 	WAVE_CLEAR_GOLD = 40
-	REROLL_FREE_PER_ROUND = 1
+	REROLL_FREE_PER_ROUND = {Difficulty.EASY: 1, Difficulty.HARD: 0, Difficulty.HELL: 0}
+	REROLL_FREE_PER_PHASE = {Difficulty.EASY: 0, Difficulty.HARD: 1, Difficulty.HELL: 0}
 	REROLL_BASE_COST = 20
 	REROLL_COST_GROWTH = 2.1
 	REROLL_WAVE_SCALE = 0.1

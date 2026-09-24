@@ -59,7 +59,7 @@ func _build(rs: RunState, comp: Dictionary) -> void:
 		var want: Types.Element = _wanted(rs, comp)
 		if want == Types.Element.NONE:
 			break
-		if rs.mods.free_upgrades > 0 or rs.gold >= Balance.UPGRADE_COST:
+		if rs.gold >= Balance.UPGRADE_COST:
 			rs.upgrade_tower(t.slot, want)
 		else:
 			break

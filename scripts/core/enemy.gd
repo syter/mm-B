@@ -28,6 +28,9 @@ var haste_time: float = 0.0
 var haste_pct: float = 0.0
 ## 精英自己用：已经放到第几个触发点了
 var cast_index: int = 0
+## 施法前摇剩余时间。> 0 期间完全不动，走完了技能才真的生效；
+## 在这段时间里被打死的话这次施法就没了 —— 那是留给玩家的打断窗口。
+var cast_time: float = 0.0
 ## 木精英挂的「死亡时分裂」。分出来的小怪不带这个标记，所以只会分裂一次。
 var split_on_death: bool = false
 ## BOSS 专用：已经切换到第几个阶段

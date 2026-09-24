@@ -11,6 +11,9 @@ func _initialize() -> void:
 		p.use_reroll = rr
 		print("\n=== 刷新：%s ===" % ("开" if rr else "关"))
 		for round_i: int in 6:
+			# 免费刷新额度是整个阶段共享的，所以每 REWARD_ROUNDS 轮才重置一次
+			if round_i % Balance.REWARD_ROUNDS == 0:
+				rs.begin_reward_phase()
 			var before: int = rs.taken_count()
 			var choices: Array[Reward] = rs.begin_reward_round()
 			var names: Array[String] = []

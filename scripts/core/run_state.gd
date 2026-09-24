@@ -14,8 +14,10 @@ var waves: Array[Wave] = []
 var wave_index: int = 1
 var finished: bool = false
 var won: bool = false
-## 整局还剩几次免费拆除（全额返还）。用完就没了，不会每波恢复。
-var free_sells: int = Balance.FREE_SELLS_PER_RUN
+## 手上还剩几次免费拆除（全额返还）。每波开始按难度补，补多少见 Balance。
+var free_sells: int = 0
+## 整局已经用掉几次。困难/地狱有整局上限，靠这个数卡住。
+var free_sells_used: int = 0
 ## 当前正在进行的战斗；BUILD/REWARD 阶段为 null
 var battle: Battle = null
 ## 本波已经即时拨进金库的赏金，避免波末结算时重复计算
@@ -24,12 +26,17 @@ var _gold_synced: int = 0
 var taken: Dictionary = {}
 ## 各属性技能的剩余冷却（秒）。每波开始归零＝开场就能放。
 var skill_cd: Dictionary = {}
-## 本轮三选一已经刷新过几次。每轮重置，第一次免费、之后越刷越贵。
+## 本次奖励阶段总共刷新了几次（免费 + 付费），只做显示和诊断用。
 var reroll_count: int = 0
+## 本次奖励阶段已经**付费**刷了几次。价格只跟这个数走，免费那几次不推高价格。
+var reroll_paid: int = 0
+## 手上还剩几次免费刷新。补充节奏按难度分，见 Balance.REROLL_FREE_*。
+var reroll_free_left: int = 0
 
 func _init(seed_value: int = 0) -> void:
 	rng = RandomNumberGenerator.new()
 	rng.seed = seed_value
+	refill_free_sells()
 	var plan: Array = Wave.plan_elements(rng)
 	for i: int in range(1, Balance.TOTAL_WAVES + 1):
 		waves.append(Wave.generate(i, rng, plan[i - 1]))
@@ -85,10 +92,7 @@ func next_tower_cost() -> int:
 	var slot: int = free_slot()
 	if slot < 0:
 		return -1
-	var cost: int = tower_cost(slot)
-	if mods.build_discount_charges > 0:
-		cost = Balance.round_cost(float(cost) * 0.5)
-	return cost
+	return tower_cost(slot)
 
 func can_build() -> bool:
 	var slot: int = free_slot()
@@ -99,10 +103,6 @@ func build_tower() -> Tower:
 		return null
 	var slot: int = free_slot()
 	var cost: int = tower_cost(slot)
-	# 奠基：攒着的半价券在这里花掉
-	if mods.build_discount_charges > 0:
-		mods.build_discount_charges -= 1
-		cost = Balance.round_cost(float(cost) * 0.5)
 	gold -= cost
 	var t: Tower = Tower.new(slot, cost)
 	towers.append(t)
@@ -125,10 +125,6 @@ func upgrade_tower(slot: int, to: Types.Element) -> bool:
 	var t: Tower = tower_at(slot)
 	if t == null or t.is_upgraded() or to == Types.Element.NONE:
 		return false
-	if mods.free_upgrades > 0:
-		mods.free_upgrades -= 1
-		t.upgrade(to, 0)
-		return true
 	var cost: int = upgrade_cost()
 	if gold < cost:
 		return false
@@ -173,7 +169,7 @@ func skill_ready(e: Types.Element) -> bool:
 
 ## 技能伤害（还没乘属性克制倍率，那一步在 Battle 里做）
 func skill_damage(e: Types.Element) -> float:
-	return Balance.SKILL_DAMAGE_PER_LEVEL * float(element_levels(e)) * (1.0 + mods.skill_power)
+	return Balance.SKILL_DAMAGE_PER_LEVEL * float(element_levels(e))
 
 func skill_cooldown() -> float:
 	return Balance.SKILL_COOLDOWN * (1.0 - mods.effective_skill_cd_cut())
@@ -185,13 +181,31 @@ func use_skill(e: Types.Element) -> bool:
 	skill_cd[e] = skill_cooldown()
 	return true
 
-## 拆塔。整局前 FREE_SELLS_PER_RUN 次全额返还，之后按 REFUND_RATE 打折。
+## 整局还能再用几次免费拆除（-1 = 不限）。手上那几次也算在里面。
+func free_sells_left() -> int:
+	var total: int = Balance.free_sells_total()
+	return -1 if total < 0 else maxi(0, total - free_sells_used)
+
+## 每波开始补免费拆除。整局额度用完之后就补不出来了。
+##
+## 分「每波补」和「整局定额」两种：前者每波把手上的补到 PER_WAVE，
+## 后者（地狱）不按波补，手上永远等于剩余额度 —— 不用就一直留着。
+func refill_free_sells() -> void:
+	var left: int = free_sells_left()
+	var per: int = Balance.free_sells_per_wave()
+	if per <= 0:
+		free_sells = maxi(left, 0)
+		return
+	free_sells = per if left < 0 else mini(per, left)
+
+## 拆塔。手上还有免费次数就全额返还，否则按 REFUND_RATE 打折。
 func sell_tower(slot: int) -> bool:
 	var t: Tower = tower_at(slot)
 	if t == null:
 		return false
 	if free_sells > 0:
 		free_sells -= 1
+		free_sells_used += 1
 		gold += t.invested
 	else:
 		gold += t.refund_value()
@@ -284,6 +298,7 @@ func _settle(result: Dictionary) -> Dictionary:
 	result["interest"] = interest
 
 	wave_index += 1
+	refill_free_sells()
 	if wave_index > Balance.TOTAL_WAVES:
 		finished = true
 		won = true
@@ -292,9 +307,19 @@ func _settle(result: Dictionary) -> Dictionary:
 
 # ---- 奖励 ------------------------------------------------------------------
 
-## 开一轮新的三选一（刷新次数归零）
-func begin_reward_round() -> Array[Reward]:
+## 进入一个新的奖励阶段（3 次选择）。价格阶梯归零，阶段级的免费额度在这里发。
+func begin_reward_phase() -> void:
 	reroll_count = 0
+	reroll_paid = 0
+	reroll_free_left = Balance.reroll_free_per_phase()
+
+## 开一轮新的三选一。
+## 简单档是「每次选择都补」，所以在这里重新给（不累积 —— 上一次没用掉的不带过来）；
+## 困难/地狱补 0，阶段级的额度就这么一直用到阶段结束。
+func begin_reward_round() -> Array[Reward]:
+	var per: int = Balance.reroll_free_per_round()
+	if per > 0:
+		reroll_free_left = per
 	return roll_rewards()
 
 ## 按当前存款算，这一波结束能拿到多少利息。
@@ -302,14 +327,13 @@ func begin_reward_round() -> Array[Reward]:
 func interest_preview() -> int:
 	return floori(float(gold) * mods.effective_interest())
 
-## 这次刷新要多少钱。每轮头 REROLL_FREE_PER_ROUND 次免费，
-## 之后指数递增，并随波次放大 —— 后期金流是前期好几倍，不跟着涨就等于免费。
+## 这次刷新要多少钱。手上还有免费额度就是 0，
+## 之后按已付费次数指数递增，并随波次放大 —— 后期金流是前期好几倍，不跟着涨就等于免费。
 func reroll_cost() -> int:
-	var paid: int = reroll_count - Balance.REROLL_FREE_PER_ROUND
-	if paid < 0:
+	if reroll_free_left > 0:
 		return 0
 	var base: float = float(Balance.REROLL_BASE_COST) \
-		* pow(Balance.REROLL_COST_GROWTH, float(paid))
+		* pow(Balance.REROLL_COST_GROWTH, float(reroll_paid))
 	var wave_scale: float = 1.0 + Balance.REROLL_WAVE_SCALE * float(wave_index - 1)
 	return Balance.round_cost(base * wave_scale)
 
@@ -319,7 +343,11 @@ func can_reroll() -> bool:
 func reroll_rewards() -> Array[Reward]:
 	if not can_reroll():
 		return []
-	gold -= reroll_cost()
+	if reroll_free_left > 0:
+		reroll_free_left -= 1
+	else:
+		gold -= reroll_cost()
+		reroll_paid += 1
 	reroll_count += 1
 	return roll_rewards()
 
@@ -340,7 +368,8 @@ func roll_rewards(k: int = Balance.REWARD_CHOICES) -> Array[Reward]:
 			if roll <= 0.0:
 				idx = i
 				break
-		out.append(candidates[idx])
+		# 「淬火」「急速」是随机属性卡，抽中的当下才决定是火还是木还是水
+		out.append(candidates[idx].roll_variant(rng))
 		candidates.remove_at(idx)
 	return out
 

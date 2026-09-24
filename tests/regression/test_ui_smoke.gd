@@ -15,6 +15,9 @@ var _game: Node2D
 ## SceneTree 的 root 在 _initialize() 阶段还没进树，这时 add_child 不会触发 _ready，
 ## 所以场景要挂上去、测试要等到第一帧才能跑。
 func _initialize() -> void:
+	# 冒烟测试可能真的通关，别让它去动玩家真正的解锁存档
+	Progress.save_path = "user://test_smoke_progress.cfg"
+	Progress.reset()
 	var scene: PackedScene = load("res://scenes/main.tscn")
 	_ok(scene != null, "主场景能载入")
 	_game = scene.instantiate()
@@ -79,6 +82,7 @@ func _run_test(game: Node2D) -> void:
 	_true(guard < 6000, "整局会结束，不会死循环")
 	_eq(game.phase, 3, "最终进入结束阶段")
 	_ok(game.over_layer.visible, "结算面板可见")
+	_ok(game.over_home.visible, "结算页有「返回首页」")
 	_true(game.run.finished, "规则层也标记为结束")
 	_true(game.run.wave_index >= 1, "至少打了一波")
 	print("  打完 %d 波，%s，剩命 %d" % [
@@ -92,6 +96,25 @@ func _run_test(game: Node2D) -> void:
 	_eq(game.run.wave_index, 1, "重来后波次归一")
 	_eq(game.run.gold, Balance.START_GOLD, "重来后金钱归初始")
 	_false(game.over_layer.visible, "重来后结算面板隐藏")
+
+	# 返回首页：要清干净残局并回到标题，而不是把上一局留在底下
+	game._back_to_title()
+	_eq(game.phase, 4, "返回首页回到标题阶段")
+	_ok(game.title_layer.visible, "标题页重新可见")
+	_false(game.over_layer.visible, "结算面板收起")
+	_eq(game.run.wave_index, 1, "残局已清掉")
+
+	# 难度解锁：没通关过就只有简单可选
+	Progress.reset()
+	game._refresh_difficulty_buttons()
+	_false(game.diff_buttons[Balance.Difficulty.EASY].disabled, "简单一直可选")
+	_ok(game.diff_buttons[Balance.Difficulty.HARD].disabled, "没通关简单时困难是锁的")
+	game._choose_difficulty(Balance.Difficulty.HELL)
+	_eq(int(game.chosen_difficulty), int(Balance.Difficulty.EASY), "点锁着的难度不生效")
+	Progress.mark_cleared(Balance.Difficulty.EASY)
+	game._refresh_difficulty_buttons()
+	_false(game.diff_buttons[Balance.Difficulty.HARD].disabled, "通关简单后困难解锁")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(Progress.save_path))
 
 	# 断言总数必须是固定的。GDScript 调用不存在的函数只会打一行错误然后
 	# 中止当前函数，剩下的断言被静默跳过，总数照样显示「0 失败」——

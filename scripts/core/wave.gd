@@ -59,7 +59,7 @@ static func generate(index_: int, rng: RandomNumberGenerator,
 	var count: int = Balance.COUNT_BASE + roundi(float(index_) * Balance.COUNT_PER_WAVE)
 	var hp: float = Balance.HP_BASE * pow(Balance.HP_GROWTH, float(index_ - 1))
 	var speed: float = Balance.ENEMY_BASE_SPEED * (1.0 + Balance.SPEED_GROWTH * float(index_ - 1))
-	var bounty: int = Balance.BOUNTY_BASE + Balance.BOUNTY_PER_WAVE * index_
+	var bounty: int = maxi(1, roundi(Balance.BOUNTY_BASE + Balance.BOUNTY_PER_WAVE * float(index_)))
 
 	for i: int in count:
 		var el: Types.Element = used[i % used.size()]

@@ -24,6 +24,14 @@ var id: String = ""
 var title: String = ""
 var desc: String = ""
 var rarity: Rarity = Rarity.C
+## 非空 = 这是张「随机属性」卡：本体只是个壳，抽中时随机换成其中一张属性变体。
+## 之所以不把火/木/水三张直接塞进池子，是那样会让这一档的权重凭空翻三倍，
+## C 档一膨胀，后面 A/S 的相对出现率就全被压掉了。
+var variants: Array[Reward] = []
+## 属性变体用：它属于哪张壳卡（"damage" / "rate"）、发的是哪种属性。
+## 评分和统计要认「这是淬火」，不能只认 "damage_火" 这个具体 id。
+var family: String = ""
+var element: Types.Element = Types.Element.NONE
 var _apply: Callable
 var _status: Callable
 
@@ -35,12 +43,19 @@ func _init(id_: String, rarity_: Rarity, title_: String, desc_: String,
 	desc = desc_
 	_apply = apply_
 	_status = status_
+	family = id_
 
 func weight() -> float:
 	return WEIGHTS[rarity]
 
 func rarity_name() -> String:
 	return RARITY_NAMES[rarity]
+
+## 抽中这张卡时真正发出去的那一张。没有变体就是它自己。
+func roll_variant(rng: RandomNumberGenerator) -> Reward:
+	if variants.is_empty():
+		return self
+	return variants[rng.randi_range(0, variants.size() - 1)]
 
 func apply(rs) -> void:
 	_apply.call(rs)
@@ -53,7 +68,7 @@ func status(rs) -> String:
 	return String(_status.call(rs))
 
 ## 已经堆到封顶的奖励不该再出现在三选一里 —— 那等于白白浪费一格。
-## 暴击不算：机率虽然封顶 65%，但倍率不封顶，永远还有得涨。
+## 暴击不在此列：机率和倍率都不封顶，永远还有得涨。
 func is_maxed(rs) -> bool:
 	var m: Modifiers = rs.mods
 	match id:
@@ -73,12 +88,7 @@ func is_available(rs) -> bool:
 	if is_maxed(rs):
 		return false
 	match id:
-		"ticket":
-			for t: Tower in rs.towers:
-				if not t.is_upgraded():
-					return true
-			return false
-		"burst", "surge":
+		"surge":
 			# 技能还没解锁就别发技能类奖励了，那等于一张废牌
 			for e: Types.Element in Types.ELEMENTAL:
 				if rs.skill_unlocked(e):
@@ -98,15 +108,37 @@ static func _cap(cur: float, cap: float, fmt: String) -> String:
 		return "已封顶（" + fmt % cap + "）"
 	return "目前 " + fmt % cur + " / 封顶 " + fmt % cap
 
+## 「淬火」「急速」的属性变体。伤害 +15% / 攻速 +12%，只作用在这一种属性的塔上。
+static func _tower_damage(e: Types.Element) -> Reward:
+	var n: String = Types.name_of(e)
+	return Reward.new("damage_" + n, Rarity.C, "淬火 · " + n, "%s属性塔伤害 +15%%" % n,
+		func(rs) -> void: rs.mods.add_damage(e, 0.15 * Balance.REWARD_POWER),
+		func(rs) -> String: return "%s塔目前 +%d%%" % [n, roundi(rs.mods.damage_bonus(e) * 100.0)])
+
+static func _tower_rate(e: Types.Element) -> Reward:
+	var n: String = Types.name_of(e)
+	return Reward.new("rate_" + n, Rarity.C, "急速 · " + n, "%s属性塔攻速 +12%%" % n,
+		func(rs) -> void: rs.mods.add_rate(e, 0.12 * Balance.REWARD_POWER),
+		func(rs) -> String: return "%s塔目前 +%d%%" % [n, roundi(rs.mods.rate_bonus(e) * 100.0)])
+
 static func _build() -> void:
+	# 壳卡本身永远不会被发出去，desc 只是给「这张卡是什么」留个说明
+	var damage_card: Reward = Reward.new("damage", Rarity.C, "淬火",
+		"随机一种属性塔伤害 +15%", func(_rs) -> void: pass)
+	var rate_card: Reward = Reward.new("rate", Rarity.C, "急速",
+		"随机一种属性塔攻速 +12%", func(_rs) -> void: pass)
+	for e: Types.Element in Types.ELEMENTAL:
+		damage_card.variants.append(_tower_damage(e))
+		rate_card.variants.append(_tower_rate(e))
+	for shell: Reward in [damage_card, rate_card]:
+		for i: int in shell.variants.size():
+			shell.variants[i].family = shell.id
+			shell.variants[i].element = Types.ELEMENTAL[i]
+
 	_pool = [
 		# ---- C：基础数值，稳定但不惊艳，用来垫底 ----
-		Reward.new("damage", Rarity.C, "淬火", "全体塔伤害 +12%",
-			func(rs) -> void: rs.mods.damage_pct += 0.12 * Balance.REWARD_POWER,
-			func(rs) -> String: return "目前 +%d%%" % roundi(rs.mods.damage_pct * 100.0)),
-		Reward.new("rate", Rarity.C, "急速", "全体塔攻速 +10%",
-			func(rs) -> void: rs.mods.rate_pct += 0.10 * Balance.REWARD_POWER,
-			func(rs) -> String: return "目前 +%d%%" % roundi(rs.mods.rate_pct * 100.0)),
+		damage_card,
+		rate_card,
 		Reward.new("life", Rarity.C, "修补", "生命 +3",
 			func(rs) -> void: rs.lives += 3,
 			func(rs) -> String: return "目前 %d 命" % rs.lives),
@@ -115,9 +147,6 @@ static func _build() -> void:
 			func(rs) -> String: return "这次给 %d 金" % (60 + 20 * rs.wave_index)),
 
 		# ---- B：有针对性，能撑起特定打法 ----
-		Reward.new("true", Rarity.B, "贯穿之刃", "每次命中附加 6 点无视属性伤害",
-			func(rs) -> void: rs.mods.true_damage += 6.0 * Balance.REWARD_POWER,
-			func(rs) -> String: return "目前 +%d" % roundi(rs.mods.true_damage)),
 		Reward.new("relief", Rarity.B, "韧性", "被克制时的伤害惩罚减轻 +0.10",
 			func(rs) -> void: rs.mods.countered_relief += 0.10 * Balance.REWARD_POWER,
 			func(rs) -> String: return _cap(
@@ -157,9 +186,6 @@ static func _build() -> void:
 		Reward.new("pierce", Rarity.A, "穿透", "攻击额外打到后方 1 只，造成 40% 伤害",
 			func(rs) -> void: rs.mods.pierce_targets += 1,
 			func(rs) -> String: return "目前额外 %d 只" % rs.mods.pierce_targets),
-		Reward.new("ticket", Rarity.A, "免费升级券", "免费把一座无属性塔升级成任意属性",
-			func(rs) -> void: rs.mods.free_upgrades += 1,
-			func(rs) -> String: return "手上 %d 张" % rs.mods.free_upgrades),
 		Reward.new("surge", Rarity.A, "蓄能", "技能冷却 -15%",
 			func(rs) -> void: rs.mods.skill_cd_cut += 0.15 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前冷却 %.1f 秒 / 最低 %.1f 秒" % [
@@ -179,17 +205,11 @@ static func _build() -> void:
 			func(rs) -> void: rs.mods.lock_bonus += 0.08 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 +%d%%/层，最多叠 %d 层" % [
 				roundi(rs.mods.lock_bonus * 100.0), Modifiers.CAP_LOCK_STACKS]),
-		Reward.new("foundation", Rarity.B, "奠基", "下一座塔位半价",
-			func(rs) -> void: rs.mods.build_discount_charges += 1,
-			func(rs) -> String: return "手上 %d 张半价券" % rs.mods.build_discount_charges),
 		Reward.new("execute", Rarity.A, "处决", "对血量低于 25% 的怪，伤害 +80%",
 			func(rs) -> void: rs.mods.execute_bonus += 0.8 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 +%d%%" % roundi(rs.mods.execute_bonus * 100.0)),
-		Reward.new("fission", Rarity.A, "裂变", "击杀时对附近的怪造成死者最大血量 15% 的伤害",
-			func(rs) -> void: rs.mods.fission_ratio += 0.15 * Balance.REWARD_POWER,
-			func(rs) -> String: return "目前 %d%%" % roundi(rs.mods.fission_ratio * 100.0)),
-		Reward.new("killstreak", Rarity.A, "连杀", "本波不漏怪时，赏金逐只递增 5%",
-			func(rs) -> void: rs.mods.killstreak_bonus += 0.05 * Balance.REWARD_POWER,
+		Reward.new("killstreak", Rarity.A, "连杀", "本波不漏怪时，赏金逐只递增 3%",
+			func(rs) -> void: rs.mods.killstreak_bonus += 0.03 * Balance.REWARD_POWER,
 			func(rs) -> String: return "目前 +%d%%/只，最多 %d 只（漏怪清零）" % [
 				roundi(rs.mods.killstreak_bonus * 100.0), Modifiers.CAP_KILLSTREAK]),
 		Reward.new("mono", Rarity.S, "独尊", "场上只有一种属性的塔时，该属性伤害 +60%",
@@ -200,6 +220,9 @@ static func _build() -> void:
 					("当前生效（%s）" % only) if only != "" else "当前没生效：场上不止一种属性"]),
 
 		# ---- S：稀有，拿到就该兴奋 ----
+		Reward.new("true", Rarity.S, "贯穿之刃", "每次命中附加 10 点无视属性伤害",
+			func(rs) -> void: rs.mods.true_damage += 10.0 * Balance.REWARD_POWER,
+			func(rs) -> String: return "目前 +%d" % roundi(rs.mods.true_damage)),
 		Reward.new("crit", Rarity.S, "破绽", "暴击机率与暴击倍率同时提升",
 			func(rs) -> void: rs.mods.crit_level += 1,
 			func(rs) -> String:
@@ -211,9 +234,6 @@ static func _build() -> void:
 				return "目前 %d%% ×%.1f　→　选后 %d%% ×%.1f" % [
 					roundi(m.crit_chance_at(m.crit_level) * 100.0), m.crit_mult_at(m.crit_level),
 					roundi(m.crit_chance_at(nxt) * 100.0), m.crit_mult_at(nxt)]),
-		Reward.new("burst", Rarity.S, "爆发", "技能伤害 +25%",
-			func(rs) -> void: rs.mods.skill_power += 0.25 * Balance.REWARD_POWER,
-			func(rs) -> String: return "目前 +%d%%" % roundi(rs.mods.skill_power * 100.0)),
 	]
 
 ## 场上是不是只有一种属性的塔，给「独尊」的状态行用
@@ -232,4 +252,7 @@ static func by_id(id_: String) -> Reward:
 	for r: Reward in pool():
 		if r.id == id_:
 			return r
+		for v: Reward in r.variants:
+			if v.id == id_:
+				return v
 	return null

@@ -7,14 +7,15 @@ extends RefCounted
 ## mode:
 ##   "neutral"  只盖无属性塔，从不升级。用来验证「有没有不靠克制的歪路」。
 ##   "counter"  照下一波构成升级成克制属性，但从不拆塔。
-##   "adaptive" 同上，另外会用掉每波的免费拆除名额，换掉下一波最没用的那座塔。
+##   "adaptive" 同上，另外会用掉手上的免费拆除名额，换掉下一波最没用的那座塔。
 ##   "fixed"    完全不看预告，三属性平均铺。用来测「看预告做选择」到底值不值钱。
 ##   "random"   随机选属性升级。用来测「选对属性」和「有属性就行」的差距。
 
 var mode: String = "adaptive"
 ## 是否在波次进行中也建塔／升级（赏金即时到账，所以打到一半能补塔）。
-## 用来量「战斗中可操作」这个改动对平衡的冲击。
-var live: bool = false
+## 默认开 —— 真人一定会这么玩，关掉的话量到的通关率偏低，
+## 拿它当难度基准就会得出「游戏太难」的错误结论。关掉只用于 A/B 诊断。
+var live: bool = true
 ## 诊断开关：分别关掉开局奖励／刷新，用来定位平衡变化是哪个机制造成的
 var opening_rewards: bool = true
 var use_reroll: bool = true
@@ -32,28 +33,62 @@ func _score(rs: RunState, r: Reward) -> float:
 	var early: float = clampf(
 		float(Balance.TOTAL_WAVES - rs.wave_index) / float(Balance.TOTAL_WAVES), 0.0, 1.0)
 	var base: float = 10.0
-	match r.id:
+	# 认 family 不认 id —— 「淬火·火」的 id 是 damage_火，但它算的还是淬火那一档。
+	# 这张表必须盖住奖励池里的每一格：漏掉的会掉到 base 10，
+	# AI 不但永远不选，还会花钱把它刷掉。v1.1 加的那批卡就漏了整整一轮。
+	match r.family:
 		"crit": base = 100.0
 		"counter": base = 92.0
-		"burst": base = 78.0
-		"damage": base = 70.0
-		"rate": base = 66.0
+		# 每 5 发 ×3（再领 ×5），摊平到每一发就是全局 +40% 伤害，比单属性加成划算
+		"charge": base = 68.0
 		"pierce": base = 62.0
-		"true": base = 56.0
+		"true": base = 58.0
+		# 连续命中同一只才叠满，塔越少越容易吃到
+		"lock": base = 54.0
 		"surge": base = 52.0
+		"execute": base = 48.0
+		"damage": base = 70.0 * _element_weight(rs, r.element)
+		"rate": base = 66.0 * _element_weight(rs, r.element)
 		"slow": base = 36.0
 		"life": base = 32.0
+		# 独尊要求场上只有一种属性。照克制铺塔的打法基本吃不到，所以得看场面给分，
+		# 不能按 S 卡的面值算 —— 那会让 AI 拿一张永远不生效的加成。
+		"mono": base = 88.0 if _is_mono(rs) else 4.0
 		"relief": base = 18.0
 		"neutral": base = 6.0
-		# 以下四张的价值随波次递减：早期一块钱能滚成一座塔，后期只是一块钱
+		# 以下几张的价值随波次递减：早期一块钱能滚成一座塔，后期只是一块钱
 		"gold": base = 30.0 + 40.0 * early
 		"interest": base = 20.0 + 60.0 * early
 		"refine": base = 22.0 + 45.0 * early
-		"ticket": base = 26.0 + 35.0 * early
+		"killstreak": base = 18.0 + 30.0 * early
+		"regen": base = 20.0 + 26.0 * early
 	# 边际递减：同一张已经拿过越多次，再拿的价值越低。
 	# 奖励是「同类加算、跨类相乘」，所以分散拿远比堆同一张强 ——
 	# 少了这一项，AI 会一直刷新直到刷出它最爱的那张，亲手把 build 毁掉。
 	return base / (1.0 + 0.35 * float(rs.taken.get(r.id, 0)))
+
+## 场上是不是只有一种属性的塔（「独尊」生效的条件）
+func _is_mono(rs: RunState) -> bool:
+	var found: int = -1
+	for t: Tower in rs.towers:
+		if not t.is_upgraded():
+			continue
+		if found < 0:
+			found = int(t.element)
+		elif found != int(t.element):
+			return false
+	return found >= 0
+
+## 属性加成只作用在那一种属性的塔上，所以这张卡的价值约等于
+## 「这种属性占了我多少火力」—— 铺三属性的话一张只加到三分之一的塔上，
+## 不能再跟以前那种全场 +N% 同价。一座都没有就是张废牌。
+func _element_weight(rs: RunState, e: Types.Element) -> float:
+	if e == Types.Element.NONE:
+		return 1.0
+	var n: int = rs.count_of(e)
+	if n <= 0:
+		return 0.1
+	return 0.1 + 1.1 * float(n) / float(maxi(rs.towers.size(), 1))
 
 func _best_score(rs: RunState, choices: Array[Reward]) -> float:
 	var best: float = -1.0
@@ -110,37 +145,42 @@ func _cast_skills(rs: RunState) -> void:
 
 ## 只花钱，不拆塔
 func _spend(rs: RunState) -> void:
-	var comp: Dictionary = rs.current_wave().composition()
-	while rs.can_build():
-		rs.build_tower()
-	if mode == "neutral":
-		return
-	for t: Tower in rs.towers:
-		if t.is_upgraded():
-			continue
-		if rs.mods.free_upgrades <= 0 and rs.gold < rs.upgrade_cost():
-			break
-		rs.upgrade_tower(t.slot, _pick_element(rs, comp))
-	_level_up(rs, comp)
+	_buy(rs, rs.current_wave().composition())
 
 func build_phase(rs: RunState) -> void:
 	var comp: Dictionary = rs.current_wave().composition()
 	if mode == "adaptive":
 		_sell_useless(rs, comp)
-	while rs.can_build():
-		rs.build_tower()
+	_buy(rs, comp)
+
+## 花钱的顺序：先把手上的无属性塔升出来，再考虑加塔，最后才练级。
+##
+## 原本是「有钱就一直盖塔」，结果是一排升不起来的无属性塔 ——
+## 它们打有属性怪只有 0.30 倍，等于把钱换成了一堆废塔位。
+## 真人不会这么买，AI 这么买的话量到的通关率会明显偏低。
+func _buy(rs: RunState, comp: Dictionary) -> void:
 	if mode == "neutral":
+		while rs.can_build():
+			rs.build_tower()
 		return
+	_upgrade_all(rs, comp)
+	# 加塔要留出升级费 —— 盖得起但升不起的塔不如不盖
+	while rs.can_build() and rs.gold >= rs.next_tower_cost() + rs.upgrade_cost():
+		if rs.build_tower() == null:
+			break
+		_upgrade_all(rs, comp)
+	_level_up(rs, comp)
+
+func _upgrade_all(rs: RunState, comp: Dictionary) -> void:
 	for t: Tower in rs.towers:
 		if t.is_upgraded():
 			continue
 		var want: Types.Element = _pick_element(rs, comp)
 		if want == Types.Element.NONE:
-			break
-		if rs.mods.free_upgrades <= 0 and rs.gold < rs.upgrade_cost():
-			break
+			return
+		if rs.gold < rs.upgrade_cost():
+			return
 		rs.upgrade_tower(t.slot, want)
-	_level_up(rs, comp)
 
 ## 塔位满了、属性也配好了，多出来的钱拿去练级。
 ## 优先练「对下一波倍率最高」的塔——练级加的是全额伤害目标，倍率越高越划算。
@@ -175,6 +215,7 @@ func _avg_mult(rs: RunState, t: Tower, comp: Dictionary) -> float:
 	return sum
 
 func reward_phase(rs: RunState) -> void:
+	rs.begin_reward_phase()
 	for i: int in Balance.REWARD_ROUNDS:
 		var choices: Array[Reward] = rs.begin_reward_round()
 		reward_phase_single(rs, choices)

@@ -20,8 +20,11 @@ func _initialize() -> void:
 	_test_tower_levels()
 	_test_skills()
 	_test_reward_pool()
+	_test_elemental_rewards()
 	_test_maxed_rewards()
 	_test_reroll_cost()
+	_test_reroll_shared_across_rounds()
+	_test_progress_unlock()
 	_test_interest_preview()
 	_test_element_traits()
 	_test_elite_skills()
@@ -120,7 +123,7 @@ func _test_tower_economy() -> void:
 	_eq(rs.towers.size(), Balance.MAX_TOWERS, "塔位上限 %d" % Balance.MAX_TOWERS)
 	_eq(rs.free_slot(), -1, "满了就没有空位")
 	# 每波第一次拆除免费（全额返还）
-	_eq(rs.free_sells, Balance.FREE_SELLS_PER_RUN, "开局就有免费拆除次数")
+	_eq(rs.free_sells, Balance.free_sells_per_wave(), "开局就有免费拆除次数")
 	var t: Tower = rs.towers[0]
 	var before: int = rs.gold
 	_eq(rs.sell_value(t.slot), t.invested, "免费拆除全额返还")
@@ -145,27 +148,68 @@ func _test_upgrade_rules() -> void:
 	# 这是玩法的硬规则：升过就不能改属性，只能拆掉重建
 	_false(rs.upgrade_tower(t.slot, Types.Element.WATER), "火塔不能改成水塔")
 	_eq(t.element, Types.Element.FIRE, "改属性失败后仍是火塔")
-	# 免费升级券
 	var t2: Tower = rs.build_tower()
 	rs.gold = 0
 	_false(rs.upgrade_tower(t2.slot, Types.Element.WATER), "没钱升不了")
-	rs.mods.free_upgrades = 1
-	_true(rs.upgrade_tower(t2.slot, Types.Element.WATER), "有券就能免费升")
-	_eq(rs.mods.free_upgrades, 0, "券用掉了")
-	_eq(rs.gold, 0, "用券不花钱")
 
-## 免费拆除是「整局一次」，不是每波一次。
-## 每波都给的话，拆掉重组就成了零成本的常规操作，
-## 「升级后不能改属性」那条硬规则会形同虚设。
+## 免费拆除按难度给，它是「看预告重组阵容」这条玩法的入场券：
+##   简单 每波 1 次、不限总量　困难 每波 1 次、整局上限 3　地狱 整局只有 1 次
 func _test_free_sell_resets() -> void:
+	# ---- 简单：每波都补，一直有 ----
+	Balance.reset()
 	var rs: RunState = RunState.new(9)
+	rs.gold = 999999
+	rs.lives = 99999
+	_eq(rs.free_sells, 1, "简单开局有 1 次")
+	_eq(rs.free_sells_left(), -1, "简单不限总量")
+	for i: int in 4:
+		var tt: Tower = rs.build_tower()
+		rs.sell_tower(tt.slot)
+		_eq(rs.free_sells, 0, "第%d波用掉后归零" % (i + 1))
+		rs.play_wave()
+		_eq(rs.free_sells, 1, "简单每波都补回 1 次")
+	_eq(rs.wave_index, 5, "波次有推进")
+
+	# ---- 困难：每波补，但整局只有 3 次 ----
+	Balance.reset()
+	Balance.apply_difficulty(Balance.Difficulty.HARD)
+	var hr: RunState = RunState.new(9)
+	hr.gold = 999999
+	hr.lives = 99999
+	_eq(hr.free_sells_left(), 3, "困难整局 3 次")
+	for i: int in 3:
+		_eq(hr.free_sells, 1, "困难第%d波手上有 1 次" % (i + 1))
+		var tt: Tower = hr.build_tower()
+		hr.sell_tower(tt.slot)
+		hr.play_wave()
+	_eq(hr.free_sells_left(), 0, "3 次用完")
+	_eq(hr.free_sells, 0, "额度见底后就不再补了")
+	# 用完只能打折拆
+	var ht: Tower = hr.build_tower()
+	var hbefore: int = hr.gold
+	hr.sell_tower(ht.slot)
+	_eq(hr.gold - hbefore, ht.refund_value(), "困难用完后只退 60%")
+
+	# ---- 地狱：整局就 1 次，不按波补，但不用就一直留着 ----
+	Balance.reset()
+	Balance.apply_difficulty(Balance.Difficulty.HELL)
+	var xr: RunState = RunState.new(9)
+	xr.gold = 999999
+	xr.lives = 99999
+	_eq(xr.free_sells, 1, "地狱开局有 1 次")
+	xr.play_wave()
+	_eq(xr.free_sells, 1, "地狱不用就一直留着，不会过期")
+	var xt: Tower = xr.build_tower()
+	xr.sell_tower(xt.slot)
+	_eq(xr.free_sells, 0, "地狱用掉就没了")
+	xr.play_wave()
+	_eq(xr.free_sells, 0, "地狱过一波也不会恢复")
+	Balance.reset()
+
+	rs = RunState.new(9)
 	rs.gold = 99999
 	var t: Tower = rs.build_tower()
 	rs.sell_tower(t.slot)
-	_eq(rs.free_sells, 0, "用掉后归零")
-	rs.play_wave()
-	_eq(rs.free_sells, 0, "过一波也不会恢复（整局只有一次）")
-	_eq(rs.wave_index, 2, "波次有推进")
 	# 用完之后只能打折拆
 	var t2: Tower = rs.build_tower()
 	var before: int = rs.gold
@@ -244,8 +288,10 @@ func _test_crit_ladder() -> void:
 		_true(m.crit_multiplier() > prev_m, "第%d级倍率严格变高" % lv)
 		prev_c = m.effective_crit()
 		prev_m = m.crit_multiplier()
+	# 机率和倍率都不封顶，只有「必暴」这个物理上限
 	m.crit_level = 99
-	_true(m.effective_crit() <= Modifiers.CAP_CRIT_CHANCE, "暴击机率有封顶")
+	_feq(m.effective_crit(), 1.0, "堆够了就是必暴")
+	_true(m.crit_multiplier() > 20.0, "倍率一路涨，没有上限")
 
 ## 属性塔可以继续练级，每级多一个全额目标
 func _test_tower_levels() -> void:
@@ -329,6 +375,38 @@ func _test_reward_pool() -> void:
 		_true(r != null, "奖励 %s 存在" % id)
 		_true(r.status(rs).length() > 0, "奖励 %s 有状态说明" % id)
 
+## 「淬火」「急速」是随机属性卡：池子里只占一格（不然 C 档权重翻三倍），
+## 抽中的当下才决定是火还是木还是水，而且只加在那一种属性的塔上。
+func _test_elemental_rewards() -> void:
+	var rs: RunState = RunState.new(77)
+	for id: String in ["damage", "rate"]:
+		var shell: Reward = Reward.by_id(id)
+		_true(shell != null, "壳卡 %s 在池子里" % id)
+		_eq(shell.variants.size(), Types.ELEMENTAL.size(), "%s 有三种属性变体" % id)
+		var seen: Array[String] = []
+		for i: int in 200:
+			var v: Reward = shell.roll_variant(rs.rng)
+			_true(shell.variants.has(v), "抽出来的一定是变体之一")
+			if not seen.has(v.id):
+				seen.append(v.id)
+		_eq(seen.size(), Types.ELEMENTAL.size(), "抽 200 次三种属性都出得来")
+
+	# 只加在中奖的那一种属性上，别的属性和无属性塔一点都吃不到
+	Reward.by_id("damage_火").apply(rs)
+	_true(rs.mods.damage_bonus(Types.Element.FIRE) > 0.0, "火塔吃到伤害加成")
+	_feq(rs.mods.damage_bonus(Types.Element.WOOD), 0.0, "木塔吃不到")
+	_feq(rs.mods.damage_bonus(Types.Element.NONE), 0.0, "无属性塔吃不到")
+	rs.gold = 99999
+	var t: Tower = rs.build_tower()
+	var plain: float = t.damage(rs.mods)
+	rs.upgrade_tower(t.slot, Types.Element.FIRE)
+	_true(t.damage(rs.mods) > plain, "升成火塔之后伤害才涨（%.1f → %.1f）"
+		% [plain, t.damage(rs.mods)])
+
+	Reward.by_id("rate_水").apply(rs)
+	_true(rs.mods.rate_bonus(Types.Element.WATER) > 0.0, "水塔吃到攻速加成")
+	_feq(rs.mods.rate_bonus(Types.Element.FIRE), 0.0, "火塔的攻速没被顺便加到")
+
 ## 堆到封顶的奖励不能再出现在三选一里 —— 那等于白白浪费一格
 func _test_maxed_rewards() -> void:
 	var rs: RunState = RunState.new(31)
@@ -354,20 +432,108 @@ func _test_maxed_rewards() -> void:
 		crit.apply(rs)
 	_false(crit.is_maxed(rs), "暴击永远不算封顶（倍率不封顶）")
 
+## 免费刷新按难度给：
+##   简单 每次选择 1 次　困难 每个奖励阶段（3 次选择）共 1 次　地狱 没有免费刷新
+func _test_reroll_shared_across_rounds() -> void:
+	# ---- 简单：每次选择都补回来 ----
+	Balance.reset()
+	var rs: RunState = RunState.new(88)
+	rs.gold = 999999
+	rs.begin_reward_phase()
+	for i: int in Balance.REWARD_ROUNDS:
+		rs.begin_reward_round()
+		_eq(rs.reroll_cost(), 0, "简单第%d次选择有免费刷新" % (i + 1))
+		var g: int = rs.gold
+		rs.reroll_rewards()
+		_eq(rs.gold, g, "免费刷新不扣钱")
+		_true(rs.reroll_cost() > 0, "同一次选择内再刷就要钱了")
+	_eq(rs.reroll_paid, 0, "全程没花过钱")
+
+	# ---- 困难：3 次选择共享一次 ----
+	Balance.reset()
+	Balance.apply_difficulty(Balance.Difficulty.HARD)
+	var hr: RunState = RunState.new(88)
+	hr.gold = 999999
+	hr.begin_reward_phase()
+	hr.begin_reward_round()
+	_eq(hr.reroll_cost(), 0, "困难阶段内第一次刷新免费")
+	hr.reroll_rewards()
+	_true(hr.reroll_cost() > 0, "用掉之后就要钱")
+	hr.begin_reward_round()
+	_true(hr.reroll_cost() > 0, "换到第二次选择也不会补回来")
+	hr.begin_reward_phase()
+	hr.begin_reward_round()
+	_eq(hr.reroll_cost(), 0, "进新阶段才重新给")
+
+	# ---- 地狱：一次免费都没有 ----
+	Balance.reset()
+	Balance.apply_difficulty(Balance.Difficulty.HELL)
+	var xr: RunState = RunState.new(88)
+	xr.gold = 999999
+	xr.begin_reward_phase()
+	xr.begin_reward_round()
+	_true(xr.reroll_cost() > 0, "地狱第一次刷新就要钱")
+	var xg: int = xr.gold
+	xr.reroll_rewards()
+	_true(xr.gold < xg, "地狱刷新真的扣钱")
+	_eq(xr.reroll_paid, 1, "记成付费刷新")
+	Balance.reset()
+
+## 难度是一档一档解锁的，存档跨局保留
+func _test_progress_unlock() -> void:
+	var real: String = Progress.save_path
+	# 别拿玩家真正的存档做测试
+	Progress.save_path = "user://test_progress.cfg"
+	Progress.reset()
+
+	_true(Progress.is_unlocked(Balance.Difficulty.EASY), "简单一开始就开着")
+	_false(Progress.is_unlocked(Balance.Difficulty.HARD), "困难一开始锁着")
+	_false(Progress.is_unlocked(Balance.Difficulty.HELL), "地狱一开始锁着")
+	_eq(int(Progress.highest_unlocked()), int(Balance.Difficulty.EASY), "默认只能选简单")
+
+	_true(Progress.mark_cleared(Balance.Difficulty.EASY), "首次通关简单")
+	_true(Progress.is_unlocked(Balance.Difficulty.HARD), "通关简单解锁困难")
+	_false(Progress.is_unlocked(Balance.Difficulty.HELL), "地狱还锁着")
+	_false(Progress.mark_cleared(Balance.Difficulty.EASY), "重复通关不再算首次")
+
+	# 不能跳级：没打通困难就通关地狱是不可能发生的，但解锁关系本身要严格
+	_eq(int(Progress.unlocks(Balance.Difficulty.EASY)), int(Balance.Difficulty.HARD),
+		"简单解锁的是困难")
+	_eq(int(Progress.unlocks(Balance.Difficulty.HELL)), int(Balance.Difficulty.HELL),
+		"地狱是最后一档，不再解锁别的")
+
+	Progress.mark_cleared(Balance.Difficulty.HARD)
+	_true(Progress.is_unlocked(Balance.Difficulty.HELL), "通关困难解锁地狱")
+	_eq(int(Progress.highest_unlocked()), int(Balance.Difficulty.HELL), "三档全开")
+
+	# 存档要能读回来
+	Progress.save_progress()
+	Progress.reset()
+	Progress.load_progress()
+	_true(Progress.is_cleared(Balance.Difficulty.EASY), "存档读回来还记得通关过简单")
+	_true(Progress.is_unlocked(Balance.Difficulty.HELL), "读回来地狱仍是开的")
+
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(Progress.save_path))
+	Progress.save_path = real
+	Progress.reset()
+
 ## 刷新价格必须随次数和波次一起涨，否则等于免费
 func _test_reroll_cost() -> void:
+	Balance.reset()
 	var rs: RunState = RunState.new(32)
 	rs.wave_index = 1
-	rs.reroll_count = 0
-	_eq(rs.reroll_cost(), 0, "每轮第一次刷新免费")
+	rs.begin_reward_phase()
+	rs.begin_reward_round()
+	_eq(rs.reroll_cost(), 0, "简单档每次选择都有一次免费")
+	rs.reroll_free_left = 0
 	var prev: int = 0
-	for n: int in range(1, 5):
-		rs.reroll_count = n
+	for n: int in range(0, 4):
+		rs.reroll_paid = n
 		var c: int = rs.reroll_cost()
-		_true(c > prev, "第%d次刷新比上一次贵（%d > %d）" % [n + 1, c, prev])
+		_true(c > prev, "第%d次付费刷新比上一次贵（%d > %d）" % [n + 1, c, prev])
 		prev = c
 	# 同样的次数，后期必须更贵 —— 后期金流是前期的好几倍
-	rs.reroll_count = 2
+	rs.reroll_paid = 1
 	var early: int = rs.reroll_cost()
 	rs.wave_index = 10
 	var late: int = rs.reroll_cost()
@@ -427,12 +593,20 @@ func _test_elite_skills() -> void:
 		while rs.wave_index < Balance.ELITE_WAVES[0]:
 			rs.play_wave()
 		rs.begin_wave()
+		# 每次施法会抛两条事件：前摇（报名字）和结算（效果生效）。
+		# 这里数的是真正生效的次数，前摇不算。
 		var casts: int = 0
+		var windups: int = 0
 		while not rs.battle.is_finished():
 			rs.step_battle(Balance.SIM_STEP)
-			casts += rs.battle.last_elite_casts.size()
+			for ec: Dictionary in rs.battle.last_elite_casts:
+				if bool(ec.get("windup", false)):
+					windups += 1
+				else:
+					casts += 1
 		_eq(casts, Balance.elite_casts(),
 			"%s 难度精英放 %d 次技能" % [Balance.difficulty_name(), Balance.elite_casts()])
+		_eq(windups, casts, "每次施法都有一段前摇先报名字")
 	Balance.reset()
 	_true(Balance.ELITE_CASTS_BY_DIFFICULTY[Balance.Difficulty.HELL]
 		> Balance.ELITE_CASTS_BY_DIFFICULTY[Balance.Difficulty.EASY],
@@ -580,17 +754,6 @@ func _test_new_rewards() -> void:
 	_feq(m.killstreak_multiplier(999), m.killstreak_multiplier(Modifiers.CAP_KILLSTREAK),
 		"连杀有上限")
 
-	# 奠基：半价券要真的扣钱扣券
-	rs.gold = 99999
-	m.build_discount_charges = 1
-	var full: int = rs.tower_cost(0)
-	var half: int = rs.next_tower_cost()
-	_true(half < full, "有半价券时建塔更便宜（%d < %d）" % [half, full])
-	var before_gold: int = rs.gold
-	rs.build_tower()
-	_eq(rs.gold, before_gold - half, "扣的是半价后的钱")
-	_eq(m.build_discount_charges, 0, "半价券用掉了")
-
 	# 回春：撑过一波才回血
 	m.regen_per_wave = 2
 	var lives_before: int = rs.lives
@@ -599,8 +762,8 @@ func _test_new_rewards() -> void:
 		% [lives_before, rs.lives])
 
 	# 新奖励都进池子了
-	for id: String in ["regen", "charge", "lock", "foundation",
-			"execute", "fission", "killstreak", "mono"]:
+	for id: String in ["regen", "charge", "lock",
+			"execute", "killstreak", "mono"]:
 		var r: Reward = Reward.by_id(id)
 		_true(r != null, "奖励 %s 在池子里" % id)
 		if r != null:

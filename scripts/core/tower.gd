@@ -48,11 +48,13 @@ func targets() -> int:
 func refund_value() -> int:
 	return Balance.round_cost(float(invested) * Balance.REFUND_RATE)
 
+## 伤害 / 攻速加成是按属性发的，无属性塔拿不到任何一份 ——
+## 这也是「早点决定升成什么」的另一个理由。
 func damage(mods: Modifiers) -> float:
-	return Balance.TOWER_BASE_DAMAGE * (1.0 + mods.damage_pct)
+	return Balance.TOWER_BASE_DAMAGE * (1.0 + mods.damage_bonus(element))
 
 func rate(mods: Modifiers) -> float:
-	return Balance.TOWER_BASE_RATE * (1.0 + mods.rate_pct)
+	return Balance.TOWER_BASE_RATE * (1.0 + mods.rate_bonus(element))
 
 func reset_for_wave() -> void:
 	cooldown = 0.0
